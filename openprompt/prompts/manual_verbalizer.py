@@ -116,7 +116,7 @@ class ManualVerbalizer(Verbalizer):
             :obj:`torch.Tensor`: The normalized logits of label words
         """
 
-        label_words_logits = logits[:, self.label_words_ids]
+        label_words_logits = logits[:, self.label_words_ids] # size: bsz,labels. get manual labels' logits
         label_words_logits = self.handle_multi_token(label_words_logits, self.words_ids_mask)
         label_words_logits -= 10000*(1-self.label_words_mask)
         return label_words_logits

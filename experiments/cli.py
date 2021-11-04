@@ -1,8 +1,9 @@
 import os
 import sys
+from copy import deepcopy
 sys.path.append(".")
 
-
+import comet_ml
 from openprompt.trainer import ClassificationRunner, GenerationRunner
 from openprompt.lm_bff_trainer import LMBFFClassificationRunner
 from openprompt.prompts import T5TemplateGenerator, VerbalizerGenerator
@@ -13,6 +14,7 @@ from torch._C import device
 from openprompt.pipeline_base import PromptForClassification, PromptForGeneration
 from tqdm import tqdm
 import argparse
+from comet_ml import Experiment
 import torch
 from openprompt.utils.reproduciblity import set_seed
 from openprompt.plms import get_model_class
@@ -77,8 +79,11 @@ def main():
         EXP_PATH = config_experiment_dir(config)
     else:
         EXP_PATH = config.logging.path
-    
-    init_logger(EXP_PATH+"/log.txt", config.logging.file_level, config.logging.console_level)
+
+    if not args.resume:
+        init_logger(EXP_PATH + "/log.txt", config.logging.file_level, config.logging.console_level)
+    else:
+        init_logger(str(EXP_PATH.split('---')[0]) + "/log.txt", config.logging.file_level, config.logging.console_level)
     # save config to the logger directory
     if not args.resume:
         save_config_to_yaml(config)
@@ -110,6 +115,10 @@ def main():
 
     # move the model to device:
     prompt_model = model_to_device(prompt_model, config.environment)
+
+    prompt_model_ensemble = [prompt_model]
+    for i in range(len(EXP_PATH.split('---')) - 1):
+        prompt_model_ensemble.append(deepcopy(prompt_model).to('cuda:{}'.format(i+1)))
 
     # process data and get data_loader
     if config.learning_setting == 'full':
@@ -156,7 +165,8 @@ def main():
                                     train_dataloader = train_dataloader,
                                     valid_dataloader = valid_dataloader,
                                     test_dataloader = test_dataloader,
-                                    config = config)
+                                    config = config,
+                                    prompt_model_ensemble = prompt_model_ensemble)
     elif config.task == "generation":
         runner = GenerationRunner(prompt_model = prompt_model,
                                 train_dataloader = train_dataloader,
@@ -167,10 +177,10 @@ def main():
     else:
         raise NotImplementedError
     if not args.resume:
-        runner.run()
+        runner.run()        
     else:
         if args.test: #
-            runner.test()#
+            runner.test_ensemble()#
         else:#
             runner.resume()
 

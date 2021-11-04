@@ -1,13 +1,13 @@
 dataset:
   name: agnews
-  path: datasets/TextClassification/agnews
+  path: ../datasets/TextClassification/agnews
 
 plm:
-  model_name: bert
-  model_path: bert-base-cased
+  model_name: roberta
+  model_path: roberta-large
   optimize:
     freeze_para: False
-    lr: 0.00003
+    lr: 0.00001
     weight_decay: 0.01
     scheduler:
       type: 
@@ -15,31 +15,42 @@ plm:
 
 train:
   batch_size: 2
-
+  num_epochs: 5 # the number of training epochs.  
+  shuffle_data: True # whether shuffle the training data.
+  teacher_forcing: False # whether perform teacher forcing in training.
+                      # if true, the desired prediction on each mask will
+                      # be filled in the mask.
+  gradient_accumulation_steps: 1 # update weight  every N step of training.
+                      # set 1 to disable gradient accumulation.
+  max_grad_norm: 1.0 # <0 for unlimited gradients norm
+  
 test:
   batch_size: 8
-
+  shuffle_data: False
 dev:
   batch_size: 8
-
-
+  shuffle_data: False
 
 template: soft_manual_template
 verbalizer: manual_verbalizer
 
 
 soft_manual_template:
-  choice: 0
-  file_path: scripts/TextClassification/agnews/soft_manual_template.txt
-
+  choice: 3
+  file_path: ../scripts/TextClassification/agnews/ptuning_template.txt
+  optimize: 
+    freeze_para: False
+    lr: 0.00001
+    weight_decay: 0.01
+  
 manual_verbalizer:
   choice: 0
-  file_path: scripts/TextClassification/agnews/multiwords_verbalizer.jsonl
+  file_path: ../scripts/TextClassification/agnews/multiwords_verbalizer.jsonl
   
 environment:
-  num_gpus: 1
+  num_gpus: 3 
   cuda_visible_devices:
-    - 0
+    - 1,2,3
   local_rank: 0 
 
 learning_setting: few_shot
@@ -50,8 +61,25 @@ few_shot:
   
 sampling_from_train:
   parent_config: few_shot_sampling
-  num_examples_per_label: 10
+  num_examples_per_label: 8
   also_sample_dev: True
-  num_examples_per_label_dev: 10
-  seed: 123
+  num_examples_per_label_dev: 8
+  seed: 51
 
+logging:
+  path: logs/agnews_roberta-large_soft_manual_template_manual_verbalizer_211102160650---logs/agnews_roberta-large_soft_manual_template_manual_verbalizer_211102163358---logs/agnews_roberta-large_soft_manual_template_manual_verbalizer_211102164940---logs/agnews_roberta-large_soft_manual_template_manual_verbalizer_211102180321
+
+record:
+  commet: True
+  creator: yzx
+  tags: ['roberta-large', 'tune_model', 'pet-lr-setting', 'few-shot-32-train', 'few-shot-32-dev','agnews']
+  text: "use roberta large to try agnews' fourth ptuning template .\n we may use this model to do ensemble in the future"
+
+reproduce:  # seed for reproduction 
+  cuda_seed: 214 # seed for cuda
+
+classification:
+  metric:  # the first one will be the main  to determine checkpoint.
+    - micro-f1  # whether the higher metric value is better.
+    - accuracy
+  loss_function: cross_entropy ## the loss function for classification

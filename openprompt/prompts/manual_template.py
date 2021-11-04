@@ -63,7 +63,7 @@ class ManualTemplate(Template):
             # TODO <a!> rstrip punctuation support
             # print(text) # for debug
 
-            keys, values= ['text'], [text]
+            keys, values= ['text'], [text] #values: text,soft position,mask position,text position
             for inputflag_name in self.registered_inputflag_names:
                 keys.append(inputflag_name)
                 v = None

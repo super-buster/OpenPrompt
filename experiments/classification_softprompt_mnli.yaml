@@ -1,0 +1,89 @@
+dataset:
+  name: mnli
+  path: ../datasets/TextClassification/mnli
+
+plm:
+  model_name: roberta
+  model_path: roberta-large
+  optimize:
+    freeze_para: True
+    lr: 0.0003
+    weight_decay: 0.01
+    scheduler:
+      type: 
+      num_warmup_steps: 500
+
+dataloader: 
+  max_seq_length: 128
+
+train:
+  batch_size: 64
+  num_epochs: 30 # the number of training epochs.  
+  shuffle_data: True # whether shuffle the training data.
+  teacher_forcing: False # whether perform teacher forcing in training.
+                      # if true, the desired prediction on each mask will
+                      # be filled in the mask.
+  gradient_accumulation_steps: 1 # update weight  every N step of training.
+                      # set 1 to disable gradient accumulation.
+  max_grad_norm: 1.0 # <0 for unlimited gradients norm
+  
+test:
+  batch_size: 128
+  shuffle_data: False
+dev:
+  batch_size: 128
+  shuffle_data: False
+
+template: soft_manual_template
+verbalizer: manual_verbalizer
+
+
+soft_manual_template:
+  choice: 1
+  file_path: ../scripts/TextClassification/mnli/soft_manual_template.txt
+  optimize: 
+    freeze_para: False
+    lr: 0.003
+    weight_decay: 0.0
+  
+manual_verbalizer:
+  choice: 0
+  file_path: ../scripts/TextClassification/mnli/multiwords_verbalizer.jsonl
+  
+environment:
+  num_gpus: 3 
+  cuda_visible_devices:
+    - 1,2,3
+  local_rank: 0 
+
+learning_setting: full
+
+# few_shot:
+#   parent_config: learning_setting
+#   few_shot_sampling: sampling_from_train
+  
+# sampling_from_train:
+#   parent_config: few_shot_sampling
+#   num_examples_per_label: 8
+#   also_sample_dev: False
+#   num_examples_per_label_dev: 8
+#   seed: 51
+
+logging:
+  path: logs/agnews_roberta-large_soft_manual_template_manual_verbalizer_211102160650---logs/agnews_roberta-large_soft_manual_template_manual_verbalizer_211102163358---logs/agnews_roberta-large_soft_manual_template_manual_verbalizer_211102164940---logs/agnews_roberta-large_soft_manual_template_manual_verbalizer_211102180321
+
+record:
+  commet: True
+  debug : False
+  creator: yzx
+  tags: ['roberta-large', 'not-tune_model', 'default-setting', 'full-train', 'full-dev','mnli']
+  text: "try openprompt's default setting. set plm feature-freezed"
+
+reproduce:  # seed for reproduction 
+  cuda_seed: 214 # seed for cuda
+
+classification:
+  metric:  # the first one will be the main  to determine checkpoint.
+    - accuracy
+    - micro-f1  # whether the higher metric value is better. 
+  loss_function: cross_entropy ## the loss function for classification
