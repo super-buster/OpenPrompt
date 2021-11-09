@@ -64,7 +64,7 @@ if __name__ == "__main__":
         <text_a> It is <mask>
         <text_a> Albert Einstein is a <mask>
         Albert Einstein was born in <mask>
-    '''
+    ''' 
     from openprompt.prompts import ManualTemplate
     template = ManualTemplate(
         text = template.split(),

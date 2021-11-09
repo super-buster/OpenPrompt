@@ -149,7 +149,7 @@ def get_default_config():
     cfg.generation.top_p = 0.9
     cfg.generation.repetition_penalty = 1.0 ##args.repetition_penalty,
     cfg.generation.num_beams = 5
-    cfg.generation.bad_words_ids = [628, 198] 
+    cfg.generation.bad_words_ids = [[628, 198]]
 
 
     cfg.relation_classification = CfgNode(new_allowed=True)

@@ -6,6 +6,7 @@ logs/*
 datasets/* 
 !datasets/*.sh
 .vscode/
+.idea/
 *.egg-info/
 eggs/
 .eggs/
@@ -17,3 +18,5 @@ _build/
 outputs/
 log.txt
 examples/
+test/
+experiments/logs

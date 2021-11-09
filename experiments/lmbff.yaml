@@ -1,6 +1,6 @@
 dataset:
   name: sst-2
-  path: ../datasets/original/SST-2
+  path: datasets/original/SST-2
 
 task: classification
 

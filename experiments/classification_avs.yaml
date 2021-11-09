@@ -1,6 +1,6 @@
 dataset:
   name: agnews
-  path: data/TextClassification/agnews
+  path: datasets/TextClassification/agnews
 
 plm:
   model_name: roberta

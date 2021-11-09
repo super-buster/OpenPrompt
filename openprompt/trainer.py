@@ -73,6 +73,7 @@ class BaseRunner(object):
         self.prompt_model = prompt_model
         self.inner_model = prompt_model.module if isinstance(
             prompt_model, DataParallel) else prompt_model
+        # assert self.prompt_model == self.inner_model
         if prompt_model_ensemble is not None:
             self.prompt_model_ensemble = prompt_model_ensemble
             self.inner_model_ensemble = [p.module if isinstance(
@@ -150,9 +151,9 @@ class BaseRunner(object):
         for key,value in test_scores.items():
             self.experiment.log_metric("test_"+key,value)
         # save log file to comet experiment
-        fp=open(self.config.logging.path+"/log.txt","r")
-        self.experiment.log_asset(fp,file_name="log.txt")
-        fp.close()
+        with open(self.config.logging.path+"/log.txt","r") as fp,open(self.config.logging.path+"/config.yaml","r") as fq:
+            self.experiment.log_asset(fp,file_name="log.txt")
+            self.experiment.log_asset(fq,file_name="config.yaml")
         cfg=get_yaml_config(self.config.logging.path+"/config.yaml")
         self.experiment.log_parameters(cfg) 
 
