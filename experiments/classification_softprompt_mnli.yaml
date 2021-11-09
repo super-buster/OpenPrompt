@@ -34,13 +34,13 @@ dev:
   batch_size: 8
   shuffle_data: False
 
-template: soft_manual_template
+template: mixed_template
 verbalizer: manual_verbalizer
 
 
-soft_manual_template:
-  choice: 2
-  file_path: ../scripts/TextClassification/mnli/soft_manual_template.txt
+mixed_template:
+  choice: 1
+  file_path: ../scripts/TextClassification/mnli/mixed_template.txt
   optimize: 
     freeze_para: False
     lr: 0.003
@@ -67,14 +67,19 @@ sampling_from_train:
   num_examples_per_label: 8
   also_sample_dev: True
   num_examples_per_label_dev: 8
-  seed: 51
+  seed: 
+    - 123
+    - 456
+    - 789
+    - 321
+    - 654
 
 logging:
   path: logs/mnli_roberta-large_soft_manual_template_manual_verbalizer_211109180842
 
 record:
   commet: True
-  debug : False
+  debug : True
   creator: yzx
   tags: ['roberta-large', 'tune_model', 'default-setting', 'few-shot-32-train', 'few-shot-32-dev','mnli']
   text: "try pet's prompt for mnli few-shot learning since default prompt is unpleasing, we still use it's default learning rate"

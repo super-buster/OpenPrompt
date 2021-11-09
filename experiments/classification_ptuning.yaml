@@ -50,12 +50,9 @@ manual_verbalizer:
 environment:
   num_gpus: 1
   cuda_visible_devices:
-<<<<<<< HEAD
     - 1,2,3
   local_rank: 0
-=======
-  local_rank: 0 
->>>>>>> 37e2f9dbe16b975dd9a4053b79955123447721c0
+
 
 learning_setting: few_shot
 
@@ -67,9 +64,13 @@ sampling_from_train:
   parent_config: few_shot_sampling
   num_examples_per_label: 8
   also_sample_dev: True
-<<<<<<< HEAD
   num_examples_per_label_dev: 8
-  seed: 51
+  seed:
+    - 123
+    - 456
+    - 789
+    - 321
+    - 654
 
 logging:
   path: logs/agnews_roberta-large_soft_manual_template_manual_verbalizer_211102160650---logs/agnews_roberta-large_soft_manual_template_manual_verbalizer_211102163358---logs/agnews_roberta-large_soft_manual_template_manual_verbalizer_211102164940---logs/agnews_roberta-large_soft_manual_template_manual_verbalizer_211102180321
@@ -82,15 +83,7 @@ record:
 
 reproduce:  # seed for reproduction 
   cuda_seed: 214 # seed for cuda
-=======
-  num_examples_per_label_dev: 10
-  seed:
-    - 123
-    - 456
-    - 789
-    - 321
-    - 654
->>>>>>> 37e2f9dbe16b975dd9a4053b79955123447721c0
+
 
 classification:
   metric:  # the first one will be the main  to determine checkpoint.

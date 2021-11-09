@@ -3,7 +3,7 @@ import sys
 sys.path.append(".")
 
 import argparse
-
+from comet_ml import Experiment
 from openprompt.trainer import ClassificationRunner, GenerationRunner
 from openprompt.lm_bff_trainer import LMBFFClassificationRunner
 from re import template

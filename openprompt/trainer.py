@@ -17,7 +17,7 @@ try:
     from typing import OrderedDict
 except ImportError:
     from collections import OrderedDict
-from openprompt.config import get_yaml_config
+from openprompt.config import get_user_config
 from openprompt.pipeline_base import PromptForClassification, PromptForGeneration
 from openprompt import PromptDataLoader
 from openprompt.prompts import *
@@ -386,7 +386,7 @@ class BaseRunner(object):
         with open(self.config.logging.path+"/log.txt","r") as fp,open(self.config.logging.path+"/config.yaml","r") as fq:
             self.experiment.log_asset(fp,file_name="log.txt")
             self.experiment.log_asset(fq,file_name="config.yaml")
-        cfg=get_yaml_config(self.config.logging.path+"/config.yaml")
+        cfg = get_user_config(self.config.logging.path+"/config.yaml")
         self.experiment.log_parameters(cfg) 
         return self.test(ckpt = None if self.clean else 'best')
         
