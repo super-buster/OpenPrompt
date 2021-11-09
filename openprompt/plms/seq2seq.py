@@ -59,24 +59,25 @@ class T5TokenizerWrapper(TokenizerWrapper):
 
         num_mask_token_used = 0
         
-        decoder_input_ids = [self.mask_token_ids(num_mask_token_used)]
+        decoder_input_ids = []
         loss_ids =[0]
         
-        add_prefix_space = " " # Whether adding a space before the first word.
         for piece_id, piece in enumerate(wrapped_example):
             if len(piece['text']) == 0:
                 continue
             if piece['text'] == self.template_mask_token:
                 if teacher_forcing:
+                    decoder_input_ids.append(self.mask_token_ids(num_mask_token_used))
                     encode_text = [self.mask_token_ids(num_mask_token_used)] 
-                    tgt_text_ids = self.tokenizer.encode(add_prefix_space + tgt_text[num_mask_token_used], add_special_tokens=False)
+                    tgt_text_ids = self.tokenizer.encode(" " + tgt_text[num_mask_token_used], add_special_tokens=False)
                     decoder_input_ids.extend(tgt_text_ids)
                     loss_ids.extend([1] * len(tgt_text_ids))
-                    decoder_input_ids.append(self.mask_token_ids(num_mask_token_used+1))
+                    # decoder_input_ids.append(self.mask_token_ids(num_mask_token_used+1))
                     loss_ids.append(1)
                 else:
+                    decoder_input_ids.append(self.mask_token_ids(num_mask_token_used))
                     encode_text = [self.mask_token_ids(num_mask_token_used)] 
-                    decoder_input_ids.append(self.mask_token_ids(num_mask_token_used+1))
+                    # decoder_input_ids.append(self.mask_token_ids(num_mask_token_used+1))
                     loss_ids[-1] = 1 # shift loss_ids
                     loss_ids.append(0)
                 num_mask_token_used += 1
@@ -86,19 +87,18 @@ class T5TokenizerWrapper(TokenizerWrapper):
                     if to_replace is not None:
                         piece['text'] = to_replace
                     else:
-                        raise KeyError("This tokenize doesn't specify{} token.".format(piece['text']))
+                        raise KeyError("This tokenizer doesn't specify {} token.".format(piece['text']))
 
-                if 'new_token_ids' in piece and piece['new_token_ids']!=0:
+                if 'soft_token_ids' in piece and piece['soft_token_ids']!=0:
                     encode_text =  [0] # can be replace by any token, since these token will use their own embeddings
                 else: 
-                    encode_text = self.tokenizer.encode(add_prefix_space + piece['text'], add_special_tokens=False)
+                    encode_text = self.tokenizer.encode(piece['text'], add_special_tokens=False)
                 
-            add_prefix_space = " "
             encoding_length = len(encode_text)
             
             encoder_inputs['input_ids'].append(encode_text)
             for key in piece:
-                if key!='text' and key!='loss_ids':
+                if key not in ['text', 'loss_ids']:
                     encoder_inputs[key].append([piece[key]]*encoding_length)
 
         # decoder input ids

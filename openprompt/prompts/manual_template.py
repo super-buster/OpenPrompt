@@ -3,7 +3,7 @@ from openprompt.utils.logging import logger
 
 
 
-from openprompt.data_utils.data_utils import InputExample, InputFeatures
+from openprompt.data_utils import InputExample, InputFeatures
 from typing import *
 
 from transformers.tokenization_utils import PreTrainedTokenizer
@@ -30,7 +30,12 @@ class ManualTemplate(Template):
                          mask_token=mask_token,
                          placeholder_mapping=placeholder_mapping)
         self.text = text
+    
+    def on_text_set(self):
+        """
+        when template text was set
         
+<<<<<<< HEAD
 
     def wrap_one_example(self, 
                          example: InputExample) -> List[Dict]:
@@ -94,24 +99,9 @@ class ManualTemplate(Template):
 
     def process_batch(self, batch: Union[Dict, InputFeatures])->InputFeatures:
         r"""In manual_template, the batch need not to be processed.
+=======
+        1. parse text
+>>>>>>> 37e2f9dbe16b975dd9a4053b79955123447721c0
         """
-        return batch
-    
-    @property
-    def mask_prefix(self):
-        if not hasattr(self, '_mask_prefix'):
-            mask_ids = [idx for idx, word in enumerate(self.text) if word==self.mask_token]
-            self._mask_prefix = ['' if i==0 else ' ' for i in mask_ids]
-        return self._mask_prefix
-    
-    def from_file(self,
-                  path: str,
-                  choice: int = 0,
-                  separator: str = " ",
-                  ):
-        with open(path, 'r') as fin:
-            text = fin.readlines()[choice]
-            text = text.strip().split(separator)
-        self.text = text
-        return self
-        
+
+        self.text = self.parse_text(self.text)

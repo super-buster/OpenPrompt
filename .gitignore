@@ -2,6 +2,7 @@
 data/
 **/__pycache__/
 logs/*
+experiments/logs
 !logs/.gitkeep
 datasets/* 
 !datasets/*.sh
@@ -20,3 +21,6 @@ log.txt
 examples/
 test/
 experiments/logs
+hyperopt/
+docs/source/logs/*
+

@@ -1,25 +1,30 @@
-from transformers import AdamW, get_linear_schedule_with_warmup
-from openprompt.utils.metrics import classification_metrics, generation_metric
-from openprompt.utils.logging import logger
-from openprompt.prompts import *
-from openprompt import PromptDataLoader
-import torch
-from tqdm import tqdm
-from openprompt.pipeline_base import PromptForClassification, PromptForGeneration
-from torch.nn.parallel.data_parallel import DataParallel
-from typing import Callable, OrderedDict, Union
-from openprompt.utils.utils import load_checkpoint, save_checkpoint
-from torch.utils.data import dataloader
-import os
+import os, shutil
 import sys
-from copy import deepcopy
-from openprompt.config import get_yaml_config
-import datetime
-
 sys.path.append(".")
 
-def is_world_master():
-    return torch.distributed.get_rank() == 0
+import torch
+from torch import nn
+from torch.nn.parallel.data_parallel import DataParallel
+from openprompt.utils.cuda import model_to_device
+from tensorboardX import SummaryWriter
+
+from tqdm import tqdm
+import dill
+import warnings,datetime
+
+from typing import Callable, Union, Dict
+try:
+    from typing import OrderedDict
+except ImportError:
+    from collections import OrderedDict
+from openprompt.config import get_yaml_config
+from openprompt.pipeline_base import PromptForClassification, PromptForGeneration
+from openprompt import PromptDataLoader
+from openprompt.prompts import *
+from openprompt.utils.logging import logger
+from openprompt.utils.metrics import classification_metrics, generation_metric
+from transformers import  AdamW, get_linear_schedule_with_warmup
+from transformers.optimization import  Adafactor, AdafactorSchedule
 
 def setup_comet(config):
      if config.record.commet is not None:
@@ -54,177 +59,337 @@ class BaseRunner(object):
     via `task` option, we keep it as another class for simplicity.
 
     Args:
-        prompt_model (:obj:`Union[DataParallel, PromptForClassification]`): One ``PromptModel`` object.
+        model (:obj:`nn.Module`): One ``nn.Module`` object.
         train_dataloader (:obj:`PromptDataloader`, optional): The dataloader to bachify and process the training data.
         valid_dataloader (:obj:`PromptDataloader`, optionla): The dataloader to bachify and process the val data.
         test_dataloader (:obj:`PromptDataloader`, optional): The dataloader to bachify and process the test data.
         config (:obj:`CfgNode`): A configuration object.
         loss_function (:obj:`Callable`, optional): The loss function in the training process.
     """
-
-    def __init__(self,
-                 prompt_model: Union[DataParallel, PromptForClassification],
+    def __init__(self, 
+                 model: PromptForClassification,
+                 config: CfgNode = None,
                  train_dataloader: Optional[PromptDataLoader] = None,
                  valid_dataloader: Optional[PromptDataLoader] = None,
                  test_dataloader: Optional[PromptDataLoader] = None,
-                 config: CfgNode = None,
-                 prompt_model_ensemble=None,
-                 ):
-        self.prompt_model = prompt_model
-        self.inner_model = prompt_model.module if isinstance(
-            prompt_model, DataParallel) else prompt_model
-        # assert self.prompt_model == self.inner_model
-        if prompt_model_ensemble is not None:
-            self.prompt_model_ensemble = prompt_model_ensemble
-            self.inner_model_ensemble = [p.module if isinstance(
-                p, DataParallel) else p for p in prompt_model_ensemble]
-        else:
-            self.prompt_model_ensemble = None
-            self.inner_model_ensemble = None
+                ):
+        self.model = model
+        self.config = config
         self.train_dataloader = train_dataloader
         self.valid_dataloader = valid_dataloader
         self.test_dataloader = test_dataloader
-        self.config = config
-        self.config_optimize()
+
+        self.wrap_model()
+
+        self.cur_epoch = 0
+        self.best_score = None
+        self.global_step = 0
+        self.writer = SummaryWriter(os.path.join(self.config.logging.path, 'tensorboard'))
+        if not os.path.exists(os.path.join(config.logging.path, 'checkpoints')):
+            os.mkdir(os.path.join(config.logging.path, 'checkpoints'))
+
+        self.clean = self.config.train.clean
         self.experiment=setup_comet(config)
-    def config_loss_function(self,):
-        raise NotImplementedError
+    def __del__(self):
+        if hasattr(self, 'writer'):
+            self.writer.close()
 
-    def config_optimize(self,):
-        raise NotImplementedError
+    def log(self, name, y, x):
+        if self.clean: return  #TODO add more types 
+        self.writer.add_scalar(name, y, x)
 
-    def evaluate(self, dataloader, split, post_evaluate_hook=None):
-        raise NotImplementedError
+    def set_stop_criterion(self):
+        """Total training steps, either controlled by num_training_steps or num_epochs"""
+        if hasattr(self.config.train, "num_training_steps") and self.config.train.num_training_steps is not None:
+            if self.config.train.num_epochs is not None:
+                logger.warning("num_training_steps set explicitly, num_epochs is not in use.")
+            self.num_training_steps = self.config.train.num_training_steps
+            self.num_epochs = int(1e8) # set to a large number 
+        else:
+            if self.config.train.num_epochs is None:
+                raise RuntimeError("At least num_training_steps & num_epochs should be specified.")
+            self.num_training_steps = self.steps_per_epoch * self.config.train.num_epochs
+            self.num_epochs = self.config.train.num_epochs
+        
+    @property
+    def steps_per_epoch(self) -> int:
+        """num of training steps per epoch"""
+        batches = len(self.train_dataloader)
+        effective_accum = self.config.environment.num_gpus * self.config.train.gradient_accumulation_steps
+        return (batches // effective_accum)
 
-    def train_epoch(self, epoch):
-        raise NotImplementedError
+    def wrap_model(self):
+        self.model = model_to_device(self.model, self.config.environment)
 
-    def evaluate_ensemble(self):
-        raise NotImplementedError
-
-    def prompt_initialize(self):
-        r"""Some initialization works
+    @property
+    def inner_model(self):
+        return self.model.module if isinstance(self.model, DataParallel) else self.model
+    
+    def configure_optimizers(self):
+        r"""config the optimizer and scheduler for
+        
+        1. model
+        
+        2. template
+        
+        3. verbalizer(optional)
         """
+
+        optimizers = []
+        schedulers = []
+
+        if not self.config.plm.optimize.freeze_para:
+            no_decay = self.config.plm.optimize.no_decay
+            weight_decay = self.config.plm.optimize.weight_decay
+            optimizer_grouped_parameters = [
+                {'params': [p for n, p in self.inner_model.plm.named_parameters() if not any(nd in n for nd in no_decay)], 'weight_decay': weight_decay},
+                {'params': [p for n, p in self.inner_model.plm.named_parameters() if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
+            ]
+
+            plm_optimizer = AdamW(
+                optimizer_grouped_parameters,
+                lr = self.config.plm.optimize.lr,
+                betas = self.config.plm.optimize.betas,
+                eps = self.config.plm.optimize.eps
+            )
+            optimizers.append(plm_optimizer)
+            if self.config.plm.optimize.scheduler is not None:
+                plm_scheduler = get_linear_schedule_with_warmup(
+                    plm_optimizer,
+                    num_warmup_steps = self.config.plm.optimize.scheduler.num_warmup_steps, 
+                    num_training_steps = self.num_training_steps
+                )
+                schedulers.append(plm_scheduler)
+
+        class Dummy:
+            pass
+
+        template_config = self.config[self.config.template]
+        if hasattr(template_config, "optimize") and template_config.optimize is not None: # TODO should add optimize config in each yaml
+            if not hasattr(self.inner_model.template, "optimize"):
+                # using default gradient descent optimizer.
+                optimizer_grouped_parameters = [
+                    {'params': [p for name, p in self.inner_model.template.named_parameters() if 'raw_embedding' not in name]}
+                ]
+                if template_config.optimize.name.lower() == "adamw":
+                    template_optimizer = AdamW(optimizer_grouped_parameters, lr = template_config.optimize.lr, eps=template_config.optimize.adam_epsilon)
+                    optimizers.append(template_optimizer)
+                    if hasattr(template_config.optimize, "scheduler") and template_config.optimize.scheduler is not None:
+                        template_scheduler = get_linear_schedule_with_warmup(
+                            template_optimizer,
+                            num_warmup_steps = template_config.optimize.scheduler.num_warmup_steps, 
+                            num_training_steps = self.num_training_steps
+                        )
+                        schedulers.append(template_scheduler)
+                elif template_config.optimize.name.lower() == "adafactor":
+                    template_optimizer = Adafactor(optimizer_grouped_parameters, lr=template_config.optimize.lr, weight_decay=1e-5, relative_step=False, scale_parameter=False, warmup_init=False)
+                    # template_scheduler = AdafactorSchedule(template_optimizer)
+                    optimizers.append(template_optimizer)
+                    # schedulers.append(template_scheduler)
+                else:
+                    raise NotImplementedError("Template Optimizer not Implemented!")
+            else:
+                template_optimizer = Dummy()
+                # resemble a pytorch optimizer for unified training.
+                setattr(template_optimizer, "step", self.inner_model.template.optimize)
+                setattr(template_optimizer, "zero_grad", lambda:None)
+                optimizers.append(template_optimizer)
+
+        if hasattr(self.inner_model, "verbalizer") and self.inner_model.verbalizer:
+            verbalizer_config = self.config[self.config.verbalizer]
+            if hasattr(verbalizer_config, "optimize") and verbalizer_config.optimize is not None:
+                if not hasattr(self.inner_model.verbalizer, "optimize"):
+                    # using default gradient descent optimizer.
+                    verbalizer_optimizer = AdamW(self.inner_model.verbalizer.parameters(), lr = verbalizer_config.optimize.lr)
+                    optimizers.append(verbalizer_optimizer)
+                    if hasattr(verbalizer_config.optimize, "scheduler") and verbalizer_config.optimize.scheduler is not None:
+                        verbalizer_scheduler = get_linear_schedule_with_warmup(
+                            verbalizer_optimizer,
+                            num_warmup_steps = verbalizer_config.optimize.scheduler.num_warmup_steps, 
+                            num_training_steps = self.num_training_steps
+                        )
+                        schedulers.append(verbalizer_scheduler)
+                else:
+                    verbalizer_optimizer = Dummy()
+                    # resemble a pytorch optimizer for unified training.
+                    setattr(verbalizer_optimizer, "step", self.inner_model.verbalizer.optimize)
+                    setattr(verbalizer_optimizer, "zero_grad", lambda:None)
+                    optimizers.append(verbalizer_optimizer)
+
+        self.optimizers = optimizers
+        self.schedulers = schedulers
+
+    def checkpoint_path(self, ckpt: str) -> str:
+        return os.path.join(os.path.join(self.config.logging.path, "checkpoints"), f'{ckpt}.ckpt')
+
+    def load_checkpoint(self, ckpt: str, load_state = True) -> bool:
+        logger.info(f"Loading Checkpoint {self.checkpoint_path(ckpt)}...")
+        try:
+            state_dict = torch.load(self.checkpoint_path(ckpt), pickle_module = dill, map_location = "cpu")
+        except FileNotFoundError:
+            logger.warning(f"Checkpoint {self.checkpoint_path(ckpt)} not found")
+            return False
+        
+        # load state to model
+        self.model = self.inner_model
+        self.model.load_state_dict(state_dict['state_dict'])
+
+        if load_state:
+            # load state to optimizers
+            for optimizer, op_state in zip(self.optimizers, state_dict['optimizer']):
+                if isinstance(optimizer, torch.optim.Optimizer):
+                    optimizer.load_state_dict(op_state)
+            for scheduler, sc_state in zip(self.schedulers, state_dict['scheduler']):
+                if isinstance(scheduler, torch.optim.lr_scheduler._LRScheduler):
+                    with warnings.catch_warnings(record=True):
+                        scheduler.load_state_dict(sc_state)
+
+            # load training state
+            self.cur_epoch = state_dict['cur_epoch'] + 1
+            self.best_score = state_dict['best_score']
+            self.global_step = state_dict['global_step']
+        logger.info(f"Load Checkpoint finished, the current validation metric: {state_dict['validation_metric']}")
+        return True
+
+    def save_checkpoint(self, ckpt:str, save_state = True, extra: dict = {}, copy: str = None):
+        if self.clean: return
+        logger.info(f"Saving checkpoint {self.checkpoint_path(ckpt)}...")
+        state_dict = {
+            "state_dict": self.inner_model.state_dict(),
+        }
+        state_dict.update(extra)
+
+        if save_state:
+            state_dict["optimizer"] = [opt.state_dict() if isinstance(opt, torch.optim.Optimizer) else None for opt in self.optimizers]
+            with warnings.catch_warnings(record=True):
+                state_dict["scheduler"] = [sch.state_dict() if isinstance(sch, torch.optim.lr_scheduler._LRScheduler) else None for sch in self.schedulers]
+
+            state_dict.update({
+                "cur_epoch": self.cur_epoch,
+                "best_score": self.best_score,
+                "global_step": self.global_step,
+            })
+        torch.save(state_dict, self.checkpoint_path(ckpt), pickle_module = dill)
+        if copy:
+            logger.info(f"Copying checkpoint {self.checkpoint_path(ckpt)} to {self.checkpoint_path(copy)}...")
+            shutil.copyfile(self.checkpoint_path(ckpt), self.checkpoint_path(copy))
+        logger.info(f"Save Checkpoint finished")
+
+
+    def save_results(self, split, results:dict):
+        if self.clean: return
+        for name, values in results.items():
+            file_name = os.path.join(self.config.logging.path, f"{split}_{name}.txt")
+            with open(file_name, 'w') as fout:
+                for value in values:
+                    print(value, file = fout)
+ 
+    def inference_epoch(self, split: str): 
+        outputs = []
+        self.model.eval()
+        with torch.no_grad():
+            data_loader = self.valid_dataloader if split=='validation' else self.test_dataloader
+            for batch_idx, batch in enumerate(tqdm(data_loader, desc=split)):
+                batch = batch.to("cuda:{}".format(self.config.environment.local_rank)).to_dict()
+
+                outputs.append( self.inference_step(batch, batch_idx) )
+
+        metrics = self.inference_epoch_end(split, outputs)
+        logger.info(f"{split} Performance: {metrics}")
+        for metric_name, metric in metrics.items():
+            self.log(f'{split}/{metric_name}', metric, self.cur_epoch)
+        return metrics.popitem(last=False)[1] # TODO the first metric is the most important one
+
+    def training_epoch(self, epoch):
+        self.model.train()
+        self.model.zero_grad()
+        total_loss = 0.0
+        sum_loss = 0.0
+        with tqdm(total=self.steps_per_epoch, desc=f"train epoch: {epoch}") as pbar:
+            for batch_idx, batch in enumerate(self.train_dataloader):
+                batch = batch.to("cuda:{}".format(self.config.environment.local_rank)).to_dict()
+
+                loss = self.training_step(batch, batch_idx)
+    
+                if self.config.train.gradient_accumulation_steps > 1:
+                    loss = loss / self.config.train.gradient_accumulation_steps
+                sum_loss += loss.item()
+                self.experiment.log_metric("train_step_loss",sum_loss)
+                loss.backward()
+                if (batch_idx+1) % self.config.train.gradient_accumulation_steps == 0:
+                    pbar.set_postfix({ 'loss': sum_loss })
+                    self.log('train/loss', sum_loss, self.global_step)
+                    # logger.info("{} {}".format(self.inner_model.template.soft_embeds.data.mean().item(),self.global_step))
+
+                    if self.config.train.max_grad_norm > 0:
+                        torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.train.max_grad_norm)
+
+                    for optimizer in self.optimizers:
+                        optimizer.step()
+                    for scheduler in self.schedulers:
+                        scheduler.step()
+                    for optimizer in self.optimizers:
+                        optimizer.zero_grad()
+
+                    total_loss += sum_loss
+                    sum_loss = 0.
+                    self.global_step += 1
+                    pbar.update(1)
+                if self.global_step >= self.num_training_steps:
+                    logger.info(f"Training epoch {epoch}, num_steps {self.global_step}, avg_loss: {total_loss/self.steps_per_epoch:.4f}, total_loss: {total_loss:.4f}")
+                    return -1 # an indicator of stoping the training 
+        logger.info(f"Training epoch {epoch}, num_steps {self.global_step},  avg_loss: {total_loss/self.steps_per_epoch:.4f}, total_loss: {total_loss:.4f}")
+        return total_loss
+    
+    def on_fit_start(self):
+        """Some initialization works"""
         pass
 
-    def run(self, start_epoch: int = 0, max_score: float = 0.0):
-        if start_epoch == 0:
-            self.prompt_initialize()
-            max_score = None
-        for epoch in range(start_epoch, self.config.train.num_epochs):
-            total_loss = self.train_epoch(epoch)
-            self.experiment.set_epoch(epoch)
-            self.experiment.log_metric("train_epoch_loss",total_loss,step=epoch+1)
-            scores = self.evaluate(self.valid_dataloader, "Valid")
-            for key,value in scores.items():
-                self.experiment.log_metric("valid_epoch_"+key,value,step=epoch+1)
-            model_state_dict = self.inner_model.state_dict()
-            if self.config.plm.optimize.freeze_para:
-                model_state_dict.pop('plm')
-            state_dict = {
-                "epoch": epoch+1,
-                "state_dict": self.inner_model.state_dict(),
-                "optimizer": [opt.state_dict() if isinstance(opt, torch.optim.Optimizer) else None for opt in self.optimizers],
-                "scheduler": [sch.state_dict() if isinstance(sch, torch.optim.lr_scheduler._LRScheduler) else None for sch in self.schedulers],
-                "scores": scores,
-                "max_score": max_score
-            }
-            cur_score = scores.popitem()[1]
+    def fit(self, ckpt: Optional[str] = None):
+        self.set_stop_criterion()
+        self.configure_optimizers()
 
-            is_best = ((cur_score - max_score) >= 0) == \
-                self.config.checkpoint.higher_better if max_score is not None else True
-            if is_best:
-                max_score = cur_score
-            save_checkpoint(state_dict=state_dict,
-                            is_best=(
-                                is_best and self.config.checkpoint.save_best),
-                            save_path=self.config.logging.path)
-        state_dict = load_checkpoint(load_path=self.config.logging.path,
-                                     load_best=self.config.checkpoint.save_best,
-                                     # cpu to prevent CUDA out of memory.
-                                     map_location="cpu",
-                                     )
-        self.inner_model.load_state_dict(state_dict['state_dict'])
-        self.inner_model.to("cuda:{}".format(
-            self.config.environment.local_rank))
-        test_scores=self.evaluate(self.test_dataloader, "Test")
-        for key,value in test_scores.items():
-            self.experiment.log_metric("test_"+key,value)
-        # save log file to comet experiment
+        if ckpt:
+            if not self.load_checkpoint(ckpt):
+                logger.warning("Train from scratch instead ...")
+        if self.cur_epoch == 0:
+            self.on_fit_start()
+        
+        for self.cur_epoch in range(self.cur_epoch, self.num_epochs):
+            continue_training = self.training_epoch(self.cur_epoch)
+            score = self.inference_epoch("validation")
+            self.experiment.set_epoch(self.cur_epoch)
+            if continue_training != -1:
+                self.experiment.log_metric("train_epoch_loss",continue_training,step=self.cur_epoch+1)
+                # TODO fix this new version
+                #for key,value in score.items():
+                #    self.experiment.log_metric("valid_epoch_"+key,value,step=self.cur_epoch+1)
+            copy = None
+            if self.best_score is None or ((score - self.best_score) >= 0) == self.config.checkpoint.higher_better:
+                copy = 'best'
+                self.best_score = score
+            self.save_checkpoint('last', extra={"validation_metric": score}, copy = copy)
+            if continue_training == -1:
+                logger.info("Stop training by reaching maximum num_training_steps")
+                break
+        return self.best_score
+
+    def test(self, ckpt: Optional[str] = None) -> dict:
+        if ckpt:
+            if not self.load_checkpoint(ckpt, load_state = False):
+                logger.error("Test cannot be performed")
+                exit()
+        return self.inference_epoch("test")
+
+    def run(self, ckpt: Optional[str] = None) -> dict:
+        self.fit(ckpt)
         with open(self.config.logging.path+"/log.txt","r") as fp,open(self.config.logging.path+"/config.yaml","r") as fq:
             self.experiment.log_asset(fp,file_name="log.txt")
             self.experiment.log_asset(fq,file_name="config.yaml")
         cfg=get_yaml_config(self.config.logging.path+"/config.yaml")
         self.experiment.log_parameters(cfg) 
-
-    def resume(self, ):
-        logger.info("Resume Training ...")
-        try:
-            state_dict = load_checkpoint(load_path=self.config.logging.path,
-                                         load_best=False,
-                                         # cpu to prevent CUDA out of memory.
-                                         map_location="cpu",
-                                         )
-        except FileNotFoundError:
-            logger.warning("No checkpoint found in {}, start from scratch.".format(
-                self.config.logging.path))
-            self.run()
-            return
-
-        # load state to model
-        self.inner_model.load_state_dict(state_dict['state_dict'])
-        self.inner_model.to("cuda:{}".format(
-            self.config.environment.local_rank))
-        # load state to optimizers
-        for optimizer, op_state in zip(self.optimizers, state_dict['optimizer']):
-            if isinstance(optimizer, torch.optim.Optimizer):
-                optimizer.load_state_dict(op_state)
-        for scheduler, sc_state in zip(self.schedulers, state_dict['scheduler']):
-            if isinstance(scheduler, torch.optim.lr_scheduler._LRScheduler):
-                scheduler.load_state_dict(sc_state)
-        # run
-        self.run(start_epoch=state_dict['epoch'],
-                 max_score=state_dict['max_score'])
-
-    def test(self, ):
-        logger.info("Resume Training and direct test...")
-        try:
-            state_dict = load_checkpoint(load_path=self.config.logging.path,
-                                         load_best=True,
-                                         # cpu to prevent CUDA out of memory.
-                                         map_location="cpu",
-                                         )
-        except FileNotFoundError:
-            logger.error("No checkpoint found in {}, can't test.".format(
-                self.config.logging.path))
-            exit()
-
-        # load state to model
-        self.inner_model.load_state_dict(state_dict['state_dict'])
-        self.inner_model.to("cuda:{}".format(
-            self.config.environment.local_rank))
-        self.evaluate(self.test_dataloader, "Test")
-
-    def test_ensemble(self, ):
-        logger.info("Resume Training and direct test ensembled models...")
-        for i, path in enumerate(self.config.logging.path.split('---')):
-            try:
-                state_dict = load_checkpoint(load_path=path,
-                                             load_best=True,
-                                             # cpu to prevent CUDA out of memory.
-                                             map_location="cpu",
-                                             )
-            except FileNotFoundError:
-                logger.error(
-                    "No checkpoint found in {}, can't test.".format(path))
-                exit()
-
-            # load state to model
-            self.inner_model_ensemble[i].load_state_dict(
-                state_dict['state_dict'])
-            self.inner_model_ensemble[i].to("cuda:{}".format(i))
-        self.evaluate_ensemble(self.test_dataloader, "Test")
-
+        return self.test(ckpt = None if self.clean else 'best')
+        
 
 class ClassificationRunner(BaseRunner):
     r"""A runner for simple training without training tricks.
@@ -235,237 +400,75 @@ class ClassificationRunner(BaseRunner):
     via `task` option, we keep it as another class for simplicity.
 
     Args:
-        prompt_model (:obj:`Union[DataParallel, PromptForClassification]`): One ``PromptModel`` object.
+        model (:obj:`PromptForClassification`): One ``PromptForClassification`` object.
         train_dataloader (:obj:`PromptDataloader`, optional): The dataloader to bachify and process the training data.
         valid_dataloader (:obj:`PromptDataloader`, optionla): The dataloader to bachify and process the val data.
         test_dataloader (:obj:`PromptDataloader`, optional): The dataloader to bachify and process the test data.
         config (:obj:`CfgNode`): A configuration object.
         loss_function (:obj:`Callable`, optional): The loss function in the training process.
     """
-
-    def __init__(self,
-                 prompt_model: Union[DataParallel, PromptForClassification],
+    def __init__(self, 
+                 model: PromptForClassification,
+                 config: CfgNode = None,
                  train_dataloader: Optional[PromptDataLoader] = None,
                  valid_dataloader: Optional[PromptDataLoader] = None,
                  test_dataloader: Optional[PromptDataLoader] = None,
-                 config: CfgNode = None,
                  loss_function: Optional[Callable] = None,
-                 prompt_model_ensemble=None,
+                 id2label: Optional[Dict] = None,
                  ):
-        super().__init__(prompt_model=prompt_model,
-                         train_dataloader=train_dataloader,
-                         valid_dataloader=valid_dataloader,
-                         test_dataloader=test_dataloader,
-                         config=config,
-                         prompt_model_ensemble=prompt_model_ensemble)
-
-        if loss_function is None:
-            self.config_loss_function()
-        else:
-            self.loss_function = loss_function
-
-    def config_loss_function(self,):
-        r"""config the loss function if it's not passed.
-        """
+        super().__init__(model = model,
+                         config = config,
+                         train_dataloader = train_dataloader,
+                         valid_dataloader = valid_dataloader,
+                         test_dataloader = test_dataloader,
+                        )
+        self.loss_function = loss_function if loss_function else self.configure_loss_function()
+        self.id2label = id2label
+        self.label_path_sep = config.dataset.label_path_sep   
+    
+    def configure_loss_function(self,):
+        r"""config the loss function if it's not passed."""
         if self.config.classification.loss_function == "cross_entropy":
-            self.loss_function = torch.nn.CrossEntropyLoss()
+            return torch.nn.CrossEntropyLoss()
         elif self.config.classification.loss_function == "nll_loss":
-            self.loss_function = torch.nn.NLLLoss()
+            return torch.nn.NLLLoss()
         else:
             raise NotImplementedError
+    
+    def inference_step(self, batch, batch_idx):
+        label = batch.pop('label')
+        logits = self.model(batch)
+        pred = torch.argmax(logits, dim=-1)
+        return pred.cpu().tolist(), label.cpu().tolist()
 
-    def config_optimize(self,):
-        r"""config the optimizer and scheduler for 1. model 2. template 3. verbalizer
-
-        """
-
-        self.train_steps_per_epoch = len(
-            self.train_dataloader) // self.config.train.gradient_accumulation_steps
-        num_training_steps = self.train_steps_per_epoch * self.config.train.num_epochs
-
-        if not self.config.plm.optimize.freeze_para:
-            no_decay = self.config.plm.optimize.no_decay
-            weight_decay = self.config.plm.optimize.weight_decay
-            optimizer_grouped_parameters = [
-                {'params': [p for n, p in self.inner_model.model.named_parameters() if not any(
-                    nd in n for nd in no_decay)], 'weight_decay': weight_decay},
-                {'params': [p for n, p in self.inner_model.model.named_parameters() if any(
-                    nd in n for nd in no_decay)], 'weight_decay': 0.0}
-            ]
-
-            self.model_optimizer = AdamW(
-                optimizer_grouped_parameters,
-                lr=self.config.plm.optimize.lr,
-                betas=self.config.plm.optimize.betas,
-                eps=self.config.plm.optimize.eps
-            )
-            if self.config.plm.optimize.scheduler is not None:
-                self.model_scheduler = get_linear_schedule_with_warmup(
-                    self.model_optimizer,
-                    num_warmup_steps=self.config.plm.optimize.scheduler.num_warmup_steps,
-                    num_training_steps=num_training_steps
-                )
-            else:
-                self.model_scheduler = None
-        else:
-            self.model_optimizer = None
-            self.model_scheduler = None
-
-        class Dummy:
-            pass
-
-        # template_config
-        template_config = self.config[self.config.template]
-        if hasattr(template_config, "optimize") and template_config.optimize is not None:
-            if not hasattr(self.inner_model.template, "optimize"):
-                # using default gradient descent optimizer.
-                self.template_optimizer = AdamW(
-                    self.inner_model.template.parameters(), lr=template_config.optimize.lr)
-                if hasattr(template_config.optimize, "scheduler") and template_config.optimize.scheduler is not None:
-                    self.template_scheduler = get_linear_schedule_with_warmup(
-                        self.template_optimizer,
-                        num_warmup_steps=template_config.optimize.scheduler.num_warmup_steps,
-                        num_training_steps=num_training_steps
-                    )
-                else:
-                    self.template_scheduler = None
-            else:
-                self.template_optimizer = Dummy()
-                # resemble a pytorch optimizer for unified training.
-                setattr(self.template_optimizer, "step",
-                        self.inner_model.template.optimize)
-                setattr(self.template_optimizer, "zero_grad", lambda: None)
-                self.template_scheduler = None
-        else:
-            self.template_optimizer = None
-            self.template_scheduler = None
-
-        # verbalizer_optimizer
-        verbalizer_config = self.config[self.config.verbalizer]
-        if hasattr(verbalizer_config, "optimize") and verbalizer_config.optimize is not None:
-            if not hasattr(self.inner_model.verbalizer, "optimize"):
-                # using default gradient descent optimizer.
-                self.verbalizer_optimizer = AdamW(
-                    self.inner_model.verbalizer.parameters(), lr=verbalizer_config.optimize.lr)
-                if hasattr(verbalizer_config.optimize, "scheduler") and verbalizer_config.optimize.scheduler is not None:
-                    self.verbalizer_scheduler = get_linear_schedule_with_warmup(
-                        self.verbalizer_optimizer,
-                        num_warmup_steps=verbalizer_config.optimize.scheduler.num_warmup_steps,
-                        num_training_steps=num_training_steps
-                    )
-                else:
-                    self.verbalizer_scheduler = None
-            else:
-                self.verbalizer_optimizer = Dummy()
-                # resemble a pytorch optimizer for unified training.
-                setattr(self.verbalizer_optimizer, "step",
-                        self.inner_model.verbalizer.optimize)
-                setattr(self.verbalizer_optimizer, "zero_grad", lambda: None)
-                self.verbalizer_scheduler = None
-        else:
-            self.verbalizer_optimizer = None
-            self.verbalizer_scheduler = None
-
-        self.optimizers = [self.model_optimizer,
-                           self.template_optimizer, self.verbalizer_optimizer]
-        self.schedulers = [self.model_scheduler,
-                           self.template_scheduler, self.verbalizer_scheduler]
-
-    def evaluate(self, dataloader, split, post_evaluate_hook=None):
+    def inference_epoch_end(self, split, outputs):
         preds = []
         labels = []
-        self.prompt_model.eval()
-        with torch.no_grad():
-            for batch in tqdm(dataloader, desc=split):
-                batch = batch.to("cuda:{}".format(
-                    self.config.environment.local_rank)).to_dict()
-                label = batch['label'].cpu().tolist()
-                batch.pop('label')
-                logits = self.prompt_model(batch)
-                pred = torch.argmax(logits, dim=-1)
-                preds.extend(pred.cpu().tolist())
-                labels.extend(label)
-        self.prompt_model.train()
-        scores = OrderedDict()
-        scores_str = ""
-        for metric in self.config.classification.metric:
-            score = classification_metrics(preds, labels, metric)
-            scores[metric] = score
-            scores_str += "{}: {}\n".format(metric, score)
-        logger.info("{} Performance: {}".format(split, scores_str.strip()))
-        return scores
+        for pred, label in outputs:
+            preds.extend(pred)
+            labels.extend(label)
 
-    def evaluate_ensemble(self, dataloader, split, post_evaluate_hook=None):
-        preds = []
-        labels = []
-        for model in self.prompt_model_ensemble:
-            model.eval()
-        with torch.no_grad():
-            for batch in tqdm(dataloader, desc=split):
-                batch_cpu = deepcopy(batch)
-                for i, model in enumerate(self.prompt_model_ensemble):
-                    batch = batch_cpu.to("cuda:{}".format(i)).to_dict()
-                    label = batch['label'].cpu().tolist()
-                    batch.pop('label')
-                    if i == 0:
-                        logits = model(batch).cpu()
-                    else:
-                        logits += model(batch).cpu()
-                pred = torch.argmax(logits, dim=-1)
-                preds.extend(pred.cpu().tolist())
-                labels.extend(label)
-        scores = OrderedDict()
-        scores_str = ""
-        for metric in self.config.classification.metric:
-            score = classification_metrics(preds, labels, metric)
-            scores[metric] = score
-            scores_str += "{}: {}\n".format(metric, score)
-        logger.info("{} Performance: {}".format(split, scores_str.strip()))
-        return scores
+        self.save_results(split, {
+            'preds': preds,
+            'labels': labels,
+        })
 
-    def train_epoch(self, epoch):
-        self.prompt_model.train()
-        self.prompt_model.zero_grad()
-        total_loss = 0.0
-        sum_loss = 0.0
-        pbar = tqdm(self.train_dataloader, desc="Train epoch {}".format(epoch))
-        for step, batch in enumerate(pbar):
-            batch = batch.to("cuda:{}".format(
-                self.config.environment.local_rank)).to_dict()
-            logits = self.prompt_model(batch) # bsz,num_labels
-            loss = self.loss_function(logits, batch['label']) 
-            if self.config.train.gradient_accumulation_steps > 1:
-                loss = loss / self.config.train.gradient_accumulation_steps
-            sum_loss += loss.item()
-            self.experiment.log_metric("train_step_loss",sum_loss)
-            loss.backward()
-            if (step+1) % self.config.train.gradient_accumulation_steps == 0:
-                pbar.set_postfix({'loss': sum_loss})
-                if self.config.train.max_grad_norm > 0:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.prompt_model.parameters(), self.config.train.max_grad_norm)
-                for optimizer in self.optimizers:
-                    if optimizer is not None:
-                        optimizer.step()
+        metrics = OrderedDict()
+        for metric_name in self.config.classification.metric:
+            metric = classification_metrics(preds, labels, metric_name, id2label=self.id2label, label_path_sep=self.label_path_sep)
+            metrics[metric_name] = metric
+        return metrics
 
-                for scheduler in self.schedulers:
-                    if scheduler is not None:
-                        scheduler.step()
-
-                for optimizer in self.optimizers:
-                    if optimizer is not None:
-                        optimizer.zero_grad()
-                total_loss += sum_loss
-                sum_loss = 0.
-        logger.info("Epoch {}, avg_loss: {:.4f}, total_loss: {:.4f}".format(
-            epoch, total_loss / self.train_steps_per_epoch, total_loss))
-        return total_loss
-
+    def training_step(self, batch, batch_idx):
+        logits = self.model(batch)
+        loss = self.loss_function(logits, batch['label'])
+        return loss
+    
     def prompt_initialize(self):
         verbalizer_config = self.config[self.config.verbalizer]
         template_config = self.config[self.config.template]
-        if not hasattr(self.inner_model.verbalizer, "optimize_to_initialize") and \
-                not hasattr(self.inner_model.template, "optimize_to_initialize"):
+        if not hasattr(self.inner_model.verbalizer, "optimize_to_initialize" ) and \
+            not hasattr(self.inner_model.template, "optimize_to_initialize" ):
             return None
         if hasattr(verbalizer_config, "init_using_split"):
             using_split = verbalizer_config.init_using_split
@@ -483,12 +486,11 @@ class ClassificationRunner(BaseRunner):
 
         with torch.no_grad():
             for batch in tqdm(dataloader, desc="Init_using_{}".format(using_split)):
-                batch = batch.to("cuda:{}".format(
-                    self.config.environment.local_rank)).to_dict()
-                logits = self.prompt_model(batch)
-            if hasattr(self.inner_model.verbalizer, "optimize_to_initialize"):
+                batch = batch.to("cuda:{}".format(self.config.environment.local_rank)).to_dict()
+                logits = self.model(batch)
+            if hasattr(self.inner_model.verbalizer, "optimize_to_initialize" ):
                 self.inner_model.verbalizer.optimize_to_initialize()
-            if hasattr(self.inner_model.template, "optimize_to_initialize"):
+            if hasattr(self.inner_model.template, "optimize_to_initialize" ):
                 self.inner_model.template.optimize_to_initialize()
 
 
@@ -499,169 +501,50 @@ class GenerationRunner(BaseRunner):
     This class is specially implemented for generation.
 
     Args:
-        prompt_model (:obj:`Union[DataParallel, PromptForClassification]`): One ``PromptModel`` object.
+        model (:obj:`PromptForGeneration`): One ``PromptForGeneration`` object.
         train_dataloader (:obj:`PromptDataloader`, optional): The dataloader to bachify and process the training data.
         valid_dataloader (:obj:`PromptDataloader`, optionla): The dataloader to bachify and process the val data.
         test_dataloader (:obj:`PromptDataloader`, optional): The dataloader to bachify and process the test data.
         config (:obj:`CfgNode`): A configuration object.
     """
-
-    def __init__(self,
-                 prompt_model: Union[DataParallel, PromptForGeneration],
+    def __init__(self, 
+                 model: PromptForGeneration,
+                 config: CfgNode = None,
                  train_dataloader: Optional[PromptDataLoader] = None,
                  valid_dataloader: Optional[PromptDataLoader] = None,
                  test_dataloader: Optional[PromptDataLoader] = None,
-                 config: CfgNode = None,
-                 ):
-        super().__init__(prompt_model=prompt_model,
+                ):
+        super().__init__(model=model,
+                         config=config,
                          train_dataloader=train_dataloader,
                          valid_dataloader=valid_dataloader,
                          test_dataloader=test_dataloader,
-                         config=config)
+                        )
 
-    def config_loss_function(self,):
-        r""" No need to config loss_function in generation.
-        """
-        pass
+    def inference_step(self, batch, batch_idx):
+        target = batch['tgt_text'] # TODO pop?
+        _, pred = self.model.generate(batch, **self.config.generation)
+        return pred, target # these are already a cpu list
 
-    def config_optimize(self,):
-        r"""config the optimizer and scheduler for 1. model 2. template 3. verbalizer
+    def inference_epoch_end(self, split, outputs):
+        preds = []
+        targets = []
+        for pred, target in outputs:
+            preds.extend(pred)
+            targets.extend(target)
 
-        """
+        self.save_results(split, {
+            'preds': preds,
+            'targets': targets
+        })
 
-        self.train_steps_per_epoch = len(
-            self.train_dataloader) // self.config.train.gradient_accumulation_steps
-        num_training_steps = self.train_steps_per_epoch * self.config.train.num_epochs
+        metrics = OrderedDict()
+        for metric_name in self.config.generation.metric:
+            metric = generation_metric(preds, targets, metric_name)
+            metrics[metric_name] = metric
+        return metrics
 
-        if not self.config.plm.optimize.freeze_para:
-            no_decay = self.config.plm.optimize.no_decay
-            weight_decay = self.config.plm.optimize.weight_decay
-            optimizer_grouped_parameters = [
-                {'params': [p for n, p in self.inner_model.model.named_parameters() if not any(
-                    nd in n for nd in no_decay)], 'weight_decay': weight_decay},
-                {'params': [p for n, p in self.inner_model.model.named_parameters() if any(
-                    nd in n for nd in no_decay)], 'weight_decay': 0.0}
-            ]
+    def training_step(self, batch, batch_idx):
+        loss = self.model(batch)
+        return loss
 
-            self.model_optimizer = AdamW(
-                optimizer_grouped_parameters, lr=self.config.plm.optimize.lr)
-            if self.config.plm.optimize.scheduler is not None:
-                self.model_scheduler = get_linear_schedule_with_warmup(
-                    self.model_optimizer,
-                    num_warmup_steps=self.config.plm.optimize.scheduler.num_warmup_steps,
-                    num_training_steps=num_training_steps
-                )
-            else:
-                self.model_scheduler = None
-        else:
-            self.model_optimizer = None
-            self.model_scheduler = None
-
-        class Dummy:
-            pass
-
-        # template_config
-        template_config = self.config[self.config.template]
-        if template_config.optimize is not None:
-            if not hasattr(self.inner_model.template, "optimize"):
-                # using default gradient descent optimizer.
-                no_decay = template_config.optimize.no_decay
-                weight_decay = template_config.optimize.weight_decay
-                optimizer_grouped_parameters = [
-                    {'params': [p for n, p in self.inner_model.template.named_parameters() if (not any(
-                        nd in n for nd in no_decay)) and p.requires_grad], 'weight_decay': weight_decay},
-                    {'params': [p for n, p in self.inner_model.template.named_parameters() if any(
-                        nd in n for nd in no_decay) and p.requires_grad], 'weight_decay': 0.0}
-                ]
-
-                self.template_optimizer = AdamW(self.inner_model.template.parameters(),
-                                                lr=template_config.optimize.lr,
-                                                betas=template_config.optimize.betas,
-                                                eps=template_config.optimize.eps)
-                if hasattr(template_config.optimize, "scheduler") and template_config.optimize.scheduler is not None:
-                    self.template_scheduler = get_linear_schedule_with_warmup(
-                        self.template_optimizer,
-                        num_warmup_steps=template_config.optimize.scheduler.num_warmup_steps,
-                        num_training_steps=num_training_steps
-                    )
-                else:
-                    self.template_scheduler = None
-            else:
-                self.template_optimizer = Dummy()
-                # resemble a pytorch optimizer for unified training.
-                setattr(self.template_optimizer, "step",
-                        self.inner_model.template.optimize)
-                setattr(self.template_optimizer, "zero_grad", lambda: None)
-                self.verbalizer_scheduler = None
-        else:
-            self.template_optimizer = None
-            self.template_scheduler = None
-        self.optimizers = [self.model_optimizer, self.template_optimizer]
-        self.schedulers = [self.model_scheduler, self.template_scheduler]
-
-    def evaluate(self, dataloader, split, post_evaluate_hook=None):
-        ret_file_name = os.path.join(
-            self.config.logging.path, "{}_generated_text.txt".format(split))
-
-        tgt_texts = []
-        generated_sentences_all = []
-        for batch in tqdm(dataloader, desc=split):
-            batch = batch.to("cuda:{}".format(
-                self.config.environment.local_rank)).to_dict()
-            output_sequences, generated_sentences = self.inner_model.generate(
-                batch, **self.config.generation)
-            tgt_texts.extend(batch['tgt_text'])
-            generated_sentences_all.extend(generated_sentences)
-
-        fout = open(ret_file_name, 'w')
-        for i in range(len(generated_sentences_all)):
-            fout.write(generated_sentences_all[i]+"\n")
-        fout.close()
-
-        scores = OrderedDict()
-        scores_str = ""
-        for metric in self.config.generation.metric:
-            score = generation_metric(
-                generated_sentences_all, tgt_texts, metric)
-            scores[metric] = score
-            scores_str += "{}: {}\n".format(metric, score)
-        logger.info("{} Performance: {}".format(split, scores_str.strip()))
-        return scores
-
-    def train_epoch(self, epoch):
-        self.prompt_model.train()
-        self.prompt_model.zero_grad()
-        total_loss = 0.0
-        sum_loss = 0.0
-        pbar = tqdm(self.train_dataloader, desc="Train epoch {}".format(epoch))
-        for step, batch in enumerate(pbar):
-            batch = batch.to("cuda:{}".format(
-                self.config.environment.local_rank)).to_dict()
-            # TODO：unbanlanced batch chunks
-            loss = self.prompt_model(batch).mean()
-            if self.config.train.gradient_accumulation_steps > 1:
-                loss = loss / self.config.train.gradient_accumulation_steps
-            sum_loss += loss.item()
-            loss.backward()
-
-            if (step+1) % self.config.train.gradient_accumulation_steps == 0:
-                pbar.set_postfix({'loss': sum_loss})
-                if self.config.train.max_grad_norm > 0:
-                    torch.nn.utils.clip_grad_norm_(
-                        self.prompt_model.parameters(), self.config.train.max_grad_norm)
-                for optimizer in self.optimizers:
-                    if optimizer is not None:
-                        optimizer.step()
-
-                for scheduler in self.schedulers:
-                    if scheduler is not None:
-                        scheduler.step()
-
-                for optimizer in self.optimizers:
-                    if optimizer is not None:
-                        optimizer.zero_grad()
-                total_loss += sum_loss
-                sum_loss = 0.
-        logger.info("Epoch {}, avg_loss: {:.4f}, total_loss: {:.4f}".format(
-            epoch, total_loss / self.train_steps_per_epoch, total_loss))
-        return total_loss

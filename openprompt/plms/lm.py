@@ -44,40 +44,45 @@ class LMTokenizerWrapper(TokenizerWrapper):
             if isinstance(tgt_text, str):
                 tgt_text = [tgt_text]
             
+        if self.predict_eos:
+            if not wrapped_example[-1]['text'].endswith(self.tokenizer.eos_token):
+                wrapped_example.append({"text":self.tokenizer.eos_token, "shortenable_ids":0, "loss_ids":1})
 
         encoder_inputs = defaultdict(list)
 
         num_mask_token_used = 0
         
-        add_prefix_space = " "# Whether adding a space before the first word.
         for piece_id, piece in enumerate(wrapped_example):
             if len(piece['text']) == 0:
                 continue
         
-            if piece['text'] == self.template_eos_token and wrapped_example[piece_id-1]['loss_ids'] == 1: # eos after the mask also need to be pred
+            if piece['text'] == self.tokenizer.eos_token and self.predict_eos and wrapped_example[piece_id-1]['loss_ids'] == 1: # eos after the mask also need to be pred
                 piece['loss_ids'] = 1
 
             if piece['text'] == self.template_mask_token:
                 if teacher_forcing:
-                    piece['text'] = tgt_text[num_mask_token_used]
+                    piece['text'] = " "+tgt_text[num_mask_token_used]+" "
                 else:
                     encoder_inputs['loss_ids'][-1][-1] = 1
                     break
 
             if piece['text'] in self.special_tokens_maps.keys():
-                piece['text'] = self.special_tokens_maps[piece['text']]
+                to_replace = self.special_tokens_maps[piece['text']]
+                if to_replace is not None:
+                    piece['text'] = to_replace
+                else:
+                    raise KeyError("This tokenizer doesn't specify {} token.".format(piece['text']))
 
-            if 'new_token_ids' in piece and piece['new_token_ids']!=0:
+            if 'soft_token_ids' in piece and piece['soft_token_ids']!=0:
                 encode_text =  [0] # can be replace by any token, since these token will use their own embeddings
             else: 
-                encode_text = self.tokenizer.encode(add_prefix_space + piece['text'], add_special_tokens=False)
+                encode_text = self.tokenizer.encode(piece['text'], add_special_tokens=False)
             
-            add_prefix_space = " "
             encoding_length = len(encode_text)
             
             encoder_inputs['input_ids'].append(encode_text)
             for key in piece:
-                if key!='text':
+                if key not in ['text']:
                     encoder_inputs[key].append([piece[key]]*encoding_length)
 
         encoder_inputs = self.truncate(encoder_inputs=encoder_inputs)
@@ -85,13 +90,19 @@ class LMTokenizerWrapper(TokenizerWrapper):
         # delete shortenable ids
         encoder_inputs.pop("shortenable_ids")
         encoder_inputs = self.concate_parts(input_dict=encoder_inputs)
-        encoder_inputs = self.add_special_tokens(encoder_inputs=encoder_inputs)
+        encoder_inputs = self.add_special_tokens(encoder_inputs=encoder_inputs) # this will do nothing in GPT2 tokenizer
         # create special input ids
-        encoder_inputs['attention_mask'] = [1] *len(encoder_inputs['input_ids'])
+        encoder_inputs['attention_mask'] = [1] * len(encoder_inputs['input_ids'])
         if self.create_token_type_ids:
-            encoder_inputs['token_type_ids'] = [0] *len(encoder_inputs['input_ids'])
-        
-        encoder_inputs = self.padding(input_dict=encoder_inputs, max_len=self.max_seq_length, pad_id_for_inputs=self.tokenizer.pad_token_id)
-        encoder_inputs = dict(encoder_inputs)
+            encoder_inputs['token_type_ids'] = [0] * len(encoder_inputs['input_ids'])
+        # pad to max length
+        input_ids_len = len(encoder_inputs['input_ids'])
+        encoder_inputs = self.padding(
+            input_dict = encoder_inputs,
+            max_len = self.max_seq_length,
+            pad_id_for_inputs = self.tokenizer.pad_token_id
+        )
+        encoder_inputs = {**encoder_inputs, "input_ids_len": input_ids_len}
         return encoder_inputs
     
+

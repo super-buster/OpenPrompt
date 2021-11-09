@@ -2,7 +2,7 @@ import os
 from openprompt.prompts.manual_template import ManualTemplate
 from transformers.tokenization_utils import PreTrainedTokenizer
 from transformers.utils.dummy_pt_objects import PreTrainedModel
-from openprompt.data_utils.data_utils import InputFeatures
+from openprompt.data_utils import InputFeatures
 import re
 from openprompt.prompts.manual_verbalizer import ManualVerbalizer
 from typing import *
@@ -36,7 +36,7 @@ class KnowledgeableVerbalizer(ManualVerbalizer):
                  verbalizer_lr: Optional[float]=5e-2,
                  candidate_frac: Optional[float]=0.5,
                  **kwargs):
-        super().__init__(classes=classes, prefix=prefix, multi_token_handler=multi_token_handler, **kwargs)
+        super().__init__(classes=classes, prefix=prefix, multi_token_handler=multi_token_handler, tokenizer=tokenizer, **kwargs)
         self.max_token_split = max_token_split
         self.verbalizer_lr = verbalizer_lr
         self.candidate_frac = candidate_frac

@@ -70,7 +70,10 @@ class FewShotSampler(object):
 
         '''
         if valid_dataset is None:
-            return self._sample(train_dataset, seed, sample_twice = True)
+            if self.also_sample_dev:
+                return self._sample(train_dataset, seed, sample_twice=True)
+            else:
+                return self._sample(train_dataset, seed, sample_twice=False)
         else:
             train_dataset = self._sample(train_dataset, seed)
             if self.also_sample_dev:
@@ -83,7 +86,9 @@ class FewShotSampler(object):
                 sample_twice = False,
                ) -> Union[Dataset, List]:
         if seed is not None:
-            np.random.seed(seed)
+            self.rng = np.random.RandomState(seed)
+        else:
+            self.rng = np.random.RandomState()
         indices = [i for i in range(len(data))]
 
         if self.num_examples_per_label is not None:
@@ -115,8 +120,7 @@ class FewShotSampler(object):
                 return [data[i] for i in selected_ids]
         
     
-    @staticmethod
-    def sample_total(indices: List, num_examples_total):
+    def sample_total(self, indices: List, num_examples_total):
         '''
         Use the total number of examples for few-shot sampling (Strategy ``I``).
         
@@ -128,13 +132,12 @@ class FewShotSampler(object):
             :obj:`List`: The selected indices with the size of ``num_examples_total``.
             
         '''
-        np.random.shuffle(indices)
+        self.rng.shuffle(indices)
         selected_ids = indices[:num_examples_total]
         logger.info("Selected examples (mixed) {}".format(selected_ids))
         return selected_ids
 
-    @staticmethod
-    def sample_per_label(indices: List, labels, num_examples_per_label):
+    def sample_per_label(self, indices: List, labels, num_examples_per_label):
         '''
         Use the number of examples per class for few-shot sampling (Strategy ``II``). 
         If the number of examples is not enough, a warning will pop up.
@@ -154,12 +157,12 @@ class FewShotSampler(object):
             ids_per_label[label].append(idx)
         for label, ids in ids_per_label.items():
             tmp = np.array(ids)
-            np.random.shuffle(tmp)
+            self.rng.shuffle(tmp)
             if len(tmp) < num_examples_per_label:
                 logger.info("Not enough examples of label {} can be sampled".format(label))
             selected_ids.extend(tmp[:num_examples_per_label].tolist())
         selected_ids = np.array(selected_ids)
-        np.random.shuffle(selected_ids)
+        self.rng.shuffle(selected_ids)
         selected_ids = selected_ids.tolist()    
         logger.info("Selected examples {}".format(selected_ids))
         return selected_ids
