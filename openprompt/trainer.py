@@ -33,7 +33,7 @@ def setup_comet(config):
         if hasattr(config.record,"debug") and config.record.debug == True:
             debug = True
         experiment = Experiment(
-            api_key="AgCHxPE8ZEMXpaVukFgMEufv7",
+            api_key=os.environ['comet_api_key'],
             project_name="promptensemble",
             workspace="super-buster",
             disabled=debug    
@@ -116,7 +116,8 @@ class BaseRunner(object):
         """num of training steps per epoch"""
         batches = len(self.train_dataloader)
         effective_accum = self.config.environment.num_gpus * self.config.train.gradient_accumulation_steps
-        return (batches // effective_accum)
+        return batches # fix the bug in multi-gpu training
+        #return (batches // effective_accum)
 
     def wrap_model(self):
         self.model = model_to_device(self.model, self.config.environment)
@@ -298,7 +299,7 @@ class BaseRunner(object):
         logger.info(f"{split} Performance: {metrics}")
         for metric_name, metric in metrics.items():
             self.log(f'{split}/{metric_name}', metric, self.cur_epoch)
-        return metrics.popitem(last=False)[1] # TODO the first metric is the most important one
+        return metrics # TODO the first metric is the most important one
 
     def training_epoch(self, epoch):
         self.model.train()
@@ -361,9 +362,9 @@ class BaseRunner(object):
             self.experiment.set_epoch(self.cur_epoch)
             if continue_training != -1:
                 self.experiment.log_metric("train_epoch_loss",continue_training,step=self.cur_epoch+1)
-                # TODO fix this new version
-                #for key,value in score.items():
-                #    self.experiment.log_metric("valid_epoch_"+key,value,step=self.cur_epoch+1)
+                for key,value in score.items():
+                    self.experiment.log_metric("valid_epoch_"+key,value,step=self.cur_epoch+1)
+            score=score.popitem(last=False)[1]
             copy = None
             if self.best_score is None or ((score - self.best_score) >= 0) == self.config.checkpoint.higher_better:
                 copy = 'best'
@@ -379,14 +380,19 @@ class BaseRunner(object):
             if not self.load_checkpoint(ckpt, load_state = False):
                 logger.error("Test cannot be performed")
                 exit()
-        return self.inference_epoch("test")
+        score= self.inference_epoch("test")
+        for key,value in score.items():
+            self.experiment.log_metric("test_"+key,value)
+        score= score.popitem(last=False)[1]
+        return score
 
     def run(self, ckpt: Optional[str] = None) -> dict:
         self.fit(ckpt)
-        with open(self.config.logging.path+"/log.txt","r") as fp,open(self.config.logging.path+"/config.yaml","r") as fq:
+        path_base="../experiments/logs/"+self.config.logging.unique_string
+        with open(path_base+"/log.txt","r") as fp,open(path_base+"/config.yaml","r") as fq:
             self.experiment.log_asset(fp,file_name="log.txt")
             self.experiment.log_asset(fq,file_name="config.yaml")
-        cfg = get_user_config(self.config.logging.path+"/config.yaml")
+        cfg = get_user_config(path_base+"/config.yaml")
         self.experiment.log_parameters(cfg) 
         return self.test(ckpt = None if self.clean else 'best')
         
