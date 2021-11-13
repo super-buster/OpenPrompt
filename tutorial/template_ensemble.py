@@ -52,7 +52,7 @@ def get_args():
     parser=argparse.ArgumentParser(prog='template ensemble',formatter_class=argparse.ArgumentDefaultsHelpFormatter,prefix_chars="-",description="run some prompt models to do ensemble")
     parser.add_argument('--ensemble','--E',metavar="ENSEMBLE",nargs="+",type=str,help='ensemble models root path')
     parser.add_argument('--metrics','--M',metavar='METRICS',nargs="+",type=str,default="accuracy",choices=["accuracy","micro-f1","macro-f1"],help="choose which metrics to use")
-    parser.add_argument('--seed','--S',metavar='SEED',type=str,default="123",help="choose which seed model to use")
+    parser.add_argument('--seed','--S',metavar='SEED',nargs="+",type=str,default="123",help="choose which seed model to use")
     args=parser.parse_args()
     return args,parser
 
