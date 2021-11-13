@@ -18,7 +18,7 @@ from openprompt.utils.metrics import classification_metrics
 '''
 creator: yzx
 datetime: 2021-11-9
-function: Do ensemble for heterogeneous prompt
+function: Do ensemble for heterogeneous prompts
 How to use: python template_ensemble.py --E agnews_roberta-large_xxx --metrics accuracy micro-f1 --seed 123
 '''
 
@@ -52,7 +52,7 @@ def get_args():
     parser=argparse.ArgumentParser(prog='template ensemble',formatter_class=argparse.ArgumentDefaultsHelpFormatter,prefix_chars="-",description="run some prompt models to do ensemble")
     parser.add_argument('--ensemble','--E',metavar="ENSEMBLE",nargs="+",type=str,help='ensemble models root path')
     parser.add_argument('--metrics','--M',metavar='METRICS',nargs="+",type=str,default="accuracy",choices=["accuracy","micro-f1","macro-f1"],help="choose which metrics to use")
-    parser.add_argument('--seed','--S',metavar='SEED',type=int,default=123,help="choose which seed model to use")
+    parser.add_argument('--seed','--S',metavar='SEED',type=str,default="123",help="choose which seed model to use")
     args=parser.parse_args()
     return args,parser
 
@@ -109,13 +109,13 @@ def main():
     # consume too much resources and prone to trigger cuda error: out of memory
     for order in range(len(prompt_models)):
         try:
-            checkpoint_path="../experiments/logs/"+ args.ensemble[order] + "/seed-" + args.seed + "/checkpoints/"
+            checkpoint_path="../experiments/logs/"+ args.ensemble[order] + "/seed-" + args.seed[order] + "/checkpoints/"
             state_dict = torch.load(checkpoint_path+"best.ckpt", pickle_module = dill, map_location = "cpu")
             prompt_models[order].model.load_state_dict(state_dict['state_dict'])
         except FileNotFoundError:
             raise Exception("checkpoint not found!")
         else:
-            print("load model succeessfully!")
+            print("model {}, seed {} load correctly".format(args.ensemble[0],args.seed[order]))
         prompt_models[order].model.to('cuda:{}'.format(order))            
     logits,lables=multi_forward(prompt_models) 
     ensemble(args,cfgs,"simple_add",logits,lables)    
