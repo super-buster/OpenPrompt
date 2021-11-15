@@ -71,8 +71,9 @@ def multi_forward(prompt_models:PROMPT_MODLE) -> list:
             input=input.to('cuda:{}'.format(order))
             if order==0:
                 labels.extend(input['label'].cpu().tolist())
-            output=prompt_models[order].model(input)
-            outputs.extend(output.cpu().tolist())
+            with torch.no_grad():
+                output=prompt_models[order].model(input)
+                outputs.extend(output.cpu().tolist())
         logits.append(outputs)
     return logits,labels
 
@@ -105,8 +106,6 @@ def main():
             prompt_model = PromptForClassification(plm_model, template, verbalizer, freeze_plm = item.plm.optimize.freeze_para)
             test_dataloader = build_dataloader(test_dataset, template, plms[order].plm_tokenizer, plms[order].plm_wrapper_class, item, "test")
             prompt_models.append(PROMPT_MODLE(prompt_model,test_dataloader))
-    # TODO: a latent bug may lay in here. 
-    # consume too much resources and prone to trigger cuda error: out of memory
     for order in range(len(prompt_models)):
         try:
             checkpoint_path="../experiments/logs/"+ args.ensemble[order] + "/seed-" + args.seed[order] + "/checkpoints/"
@@ -116,6 +115,7 @@ def main():
             raise Exception("checkpoint not found!")
         else:
             print("model {}, seed {} load correctly".format(args.ensemble[0],args.seed[order]))
+        prompt_models[order].model.eval()
         prompt_models[order].model.to('cuda:{}'.format(order))            
     logits,lables=multi_forward(prompt_models) 
     ensemble(args,cfgs,"simple_add",logits,lables)    
