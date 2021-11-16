@@ -337,8 +337,10 @@ class BaseRunner(object):
                     self.global_step += 1
                     pbar.update(1)
                 if self.global_step >= self.num_training_steps:
+                    self.experiment.log_metric("train_epoch_loss",total_loss,step=epoch+1)
                     logger.info(f"Training epoch {epoch}, num_steps {self.global_step}, avg_loss: {total_loss/self.steps_per_epoch:.4f}, total_loss: {total_loss:.4f}")
                     return -1 # an indicator of stoping the training 
+        self.experiment.log_metric("train_epoch_loss",total_loss,step=epoch+1)                    
         logger.info(f"Training epoch {epoch}, num_steps {self.global_step},  avg_loss: {total_loss/self.steps_per_epoch:.4f}, total_loss: {total_loss:.4f}")
         return total_loss
     
@@ -357,13 +359,11 @@ class BaseRunner(object):
             self.on_fit_start()
         
         for self.cur_epoch in range(self.cur_epoch, self.num_epochs):
-            continue_training = self.training_epoch(self.cur_epoch)
-            score = self.inference_epoch("validation")
             self.experiment.set_epoch(self.cur_epoch)
-            if continue_training != -1:
-                self.experiment.log_metric("train_epoch_loss",continue_training,step=self.cur_epoch+1)
-                for key,value in score.items():
-                    self.experiment.log_metric("valid_epoch_"+key,value,step=self.cur_epoch+1)
+            continue_training = self.training_epoch(self.cur_epoch)
+            score = self.inference_epoch("validation")                        
+            for key,value in score.items():
+                self.experiment.log_metric("valid_epoch_"+key,value,step=self.cur_epoch+1)
             score=score.popitem(last=False)[1]
             copy = None
             if self.best_score is None or ((score - self.best_score) >= 0) == self.config.checkpoint.higher_better:
