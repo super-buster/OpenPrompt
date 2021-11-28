@@ -53,7 +53,7 @@ manual_verbalizer:
 environment:
   num_gpus: 2
   cuda_visible_devices:
-    - 2,3
+    - 0,1
   local_rank: 0 
 
 learning_setting: few_shot
@@ -68,7 +68,7 @@ sampling_from_train:
   also_sample_dev: True
   num_examples_per_label_dev: 8
   seed: 
-    - 251
+    - 246
 
 logging:
   path: logs/mnli_roberta-large_soft_manual_template_manual_verbalizer_211109180842
