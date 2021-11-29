@@ -10,13 +10,15 @@ from tensorboardX import SummaryWriter
 
 from tqdm import tqdm
 import dill
-import warnings,datetime
+import warnings
+import datetime
 
 from typing import Callable, Union, Dict
 try:
     from typing import OrderedDict
 except ImportError:
     from collections import OrderedDict
+
 from openprompt.config import get_user_config
 from openprompt.pipeline_base import PromptForClassification, PromptForGeneration
 from openprompt import PromptDataLoader
@@ -25,6 +27,7 @@ from openprompt.utils.logging import logger
 from openprompt.utils.metrics import classification_metrics, generation_metric
 from transformers import  AdamW, get_linear_schedule_with_warmup
 from transformers.optimization import  Adafactor, AdafactorSchedule
+
 
 def setup_comet(config):
      if config.record.commet is not None:
@@ -90,6 +93,7 @@ class BaseRunner(object):
 
         self.clean = self.config.train.clean
         self.experiment=setup_comet(config)
+
     def __del__(self):
         if hasattr(self, 'writer'):
             self.writer.close()
@@ -115,9 +119,8 @@ class BaseRunner(object):
     def steps_per_epoch(self) -> int:
         """num of training steps per epoch"""
         batches = len(self.train_dataloader)
-        effective_accum = self.config.environment.num_gpus * self.config.train.gradient_accumulation_steps
-        return batches # fix the bug in multi-gpu training
-        #return (batches // effective_accum)
+        effective_accum = self.config.train.gradient_accumulation_steps
+        return (batches // effective_accum)
 
     def wrap_model(self):
         self.model = model_to_device(self.model, self.config.environment)
@@ -311,7 +314,7 @@ class BaseRunner(object):
                 batch = batch.to("cuda:{}".format(self.config.environment.local_rank)).to_dict()
 
                 loss = self.training_step(batch, batch_idx)
-    
+
                 if self.config.train.gradient_accumulation_steps > 1:
                     loss = loss / self.config.train.gradient_accumulation_steps
                 sum_loss += loss.item()
@@ -340,7 +343,7 @@ class BaseRunner(object):
                     self.experiment.log_metric("train_epoch_loss",total_loss,step=epoch+1)
                     logger.info(f"Training epoch {epoch}, num_steps {self.global_step}, avg_loss: {total_loss/self.steps_per_epoch:.4f}, total_loss: {total_loss:.4f}")
                     return -1 # an indicator of stoping the training 
-        self.experiment.log_metric("train_epoch_loss",total_loss,step=epoch+1)                    
+        self.experiment.log_metric("train_epoch_loss",total_loss,step=epoch+1)
         logger.info(f"Training epoch {epoch}, num_steps {self.global_step},  avg_loss: {total_loss/self.steps_per_epoch:.4f}, total_loss: {total_loss:.4f}")
         return total_loss
     
@@ -361,7 +364,7 @@ class BaseRunner(object):
         for self.cur_epoch in range(self.cur_epoch, self.num_epochs):
             self.experiment.set_epoch(self.cur_epoch)
             continue_training = self.training_epoch(self.cur_epoch)
-            score = self.inference_epoch("validation")                        
+            score = self.inference_epoch("validation")
             for key,value in score.items():
                 self.experiment.log_metric("valid_epoch_"+key,value,step=self.cur_epoch+1)
             score=score.popitem(last=False)[1]
@@ -380,6 +383,7 @@ class BaseRunner(object):
             if not self.load_checkpoint(ckpt, load_state = False):
                 logger.error("Test cannot be performed")
                 exit()
+        
         score= self.inference_epoch("test")
         for key,value in score.items():
             self.experiment.log_metric("test_"+key,value)
@@ -553,4 +557,3 @@ class GenerationRunner(BaseRunner):
     def training_step(self, batch, batch_idx):
         loss = self.model(batch)
         return loss
-
