@@ -30,7 +30,7 @@ from transformers.optimization import  Adafactor, AdafactorSchedule
 
 
 def setup_comet(config):
-     if config.record.commet is not None:
+    if config.record.comet is not None:
         from comet_ml import Experiment
         debug = False
         if hasattr(config.record,"debug") and config.record.debug == True:
@@ -40,18 +40,21 @@ def setup_comet(config):
             project_name="promptensemble",
             workspace="super-buster",
             disabled=debug    
-        )
-        if config.record.tags != None:
+            )
+        if hasattr(config.record,"tags") and config.record.tags != None:
             experiment.add_tags(config.record.tags)
         if hasattr(config.record,"name") and config.record.name != None:
             experiment.set_name(config.record.name)
         else:
             experiment.set_name(config.logging.unique_string)
-        if config.record.text != None:
+        if hasattr(config.record,"text") and config.record.text != None:
             meta={'time':datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),'creator':config.record.creator}
             experiment.log_text(config.record.text,metadata=meta)
         logger.info("set up comet {} successfully!".format(experiment.get_name()))
         return experiment
+    else:
+        return None
+    
 
 class BaseRunner(object):
     r"""A base runner for training without training tricks.

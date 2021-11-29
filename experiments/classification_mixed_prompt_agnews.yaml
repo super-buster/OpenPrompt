@@ -75,10 +75,10 @@ logging:
 
 record:
   commet: True
-  debug : True
+  debug : False
   creator: yzx
   tags: ['roberta-large', 'tune_model', 'default-setting', 'few-shot-32-train', 'few-shot-32-dev','agnews']
-  text: "try pet's prompt for mnli few-shot learning since default prompt is unpleasing, we still use it's default learning rate"
+  text: "test new version merged from thu openprompt"
 
 reproduce:  # seed for reproduction 
   cuda_seed: 214 # seed for cuda
