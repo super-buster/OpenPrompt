@@ -23,4 +23,4 @@ test/
 experiments/logs
 hyperopt/
 docs/source/logs/*
-
+experiments/others
