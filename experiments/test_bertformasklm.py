@@ -46,4 +46,5 @@ def main():
   filled_words=[model.tokenizer._convert_id_to_token(np.argmax(pred_scores[p])) for p in position]
   print("the most possible word filled in the mask place is {}".format(filled_words))
 
-main()
+if __name__ == '__main__':
+  main()
