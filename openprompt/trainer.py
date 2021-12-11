@@ -5,6 +5,7 @@ sys.path.append(".")
 import torch
 from torch import nn
 from torch.nn.parallel.data_parallel import DataParallel
+import torch.nn.functional as F
 from openprompt.utils.cuda import model_to_device
 from tensorboardX import SummaryWriter
 
@@ -472,11 +473,32 @@ class ClassificationRunner(BaseRunner):
             metrics[metric_name] = metric
         return metrics
 
-    def training_step(self, batch, batch_idx):
-        logits = self.model(batch)
-        loss = self.loss_function(logits, batch['label'])
-        return loss
+    # def training_step(self, batch, batch_idx):
+    #     logits = self.model(batch) 
+    #     loss = self.loss_function(logits, batch['label'])
+    #     return loss
     
+    def check_guid(self,batch):
+        guids = batch['guid']
+        assert len(guids)%2==0,"invalid batch"
+        origin = guids[::2]
+        dummy = guids[1::2]
+        return origin == dummy
+
+    def training_step(self,batch,batch_idx):
+        logits = self.model.forward_without_verbalize(batch)
+        logits_ce = self.model.verbalizer.process_outputs(logits,batch)
+        loss_ce = self.loss_function(logits_ce, batch['label'])
+        if self.check_guid(batch) is True:
+            temperature=1.0
+            logits_p=(logits[::2]/temperature).softmax(-1)
+            logits_q=(logits[1::2]/temperature).softmax(-1)
+            logits_mean=(logits_p+logits_q)/2
+            loss_js=(F.kl_div(logits_p.log(),logits_mean,reduction='sum')+F.kl_div(logits_q.log(),logits_mean,reduction='sum'))/2
+        alpha=0.85
+        loss=loss_ce+alpha*loss_js
+        return loss
+
     def prompt_initialize(self):
         verbalizer_config = self.config[self.config.verbalizer]
         template_config = self.config[self.config.template]

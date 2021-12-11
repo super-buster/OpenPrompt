@@ -223,14 +223,15 @@ class Template(nn.Module):
                     raise ValueError("Template: len({})={} doesn't match len(text)={}."\
                         .format(inputflag_name, len(v), len(text)))
                 values.append(v)
-            wrapped_parts_to_tokenize = []
+            wrapped_parts_to_tokenize = [] # a list of dict, which contains {text,loss_ids,shortenable_ids}
             for piece in list(zip(*values)):
                 wrapped_parts_to_tokenize.append(dict(zip(keys, piece)))
 
             wrapped_parts_not_tokenize = {key: getattr(example, key) for key in not_empty_keys}
             return [wrapped_parts_to_tokenize, wrapped_parts_not_tokenize]
         else:
-            raise TypeError("InputExample")      
+            raise TypeError("InputExample") 
+         
     
     @abstractmethod
     def process_batch(self, batch):

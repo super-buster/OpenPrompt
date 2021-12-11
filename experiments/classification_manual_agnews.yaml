@@ -1,0 +1,87 @@
+dataset:
+  name: agnews
+  path: ../datasets/TextClassification/agnews
+
+plm:
+  model_name: roberta
+  model_path: roberta-large
+  optimize:
+    freeze_para: False
+    lr: 0.00001
+    weight_decay: 0.01
+    scheduler:
+      type: 
+      num_warmup_steps: 500
+
+dataloader: 
+  max_seq_length: 128
+
+train:
+  batch_size: 2
+  num_epochs: 5 # the number of training epochs.  
+  shuffle_data: False # whether shuffle the training data.
+  teacher_forcing: False # whether perform teacher forcing in training.
+                      # if true, the desired prediction on each mask will
+                      # be filled in the mask.
+  gradient_accumulation_steps: 1 # update weight  every N step of training.
+                      # set 1 to disable gradient accumulation.
+  max_grad_norm: 1.0 # <0 for unlimited gradients norm
+  
+test:
+  batch_size: 64
+  shuffle_data: False
+dev:
+  batch_size: 8
+  shuffle_data: False
+
+template: manual_template
+verbalizer: manual_verbalizer
+
+
+manual_template:
+  choice: 0
+  file_path: ../scripts/TextClassification/agnews/manual_template.txt
+  
+manual_verbalizer:
+  choice: 0
+  file_path: ../scripts/TextClassification/agnews/multiwords_verbalizer.jsonl
+  
+environment:
+  num_gpus: 1
+  cuda_visible_devices:
+    - 0
+  local_rank: 0 
+
+learning_setting: few_shot
+
+few_shot:
+  parent_config: learning_setting
+  few_shot_sampling: sampling_from_train
+  
+sampling_from_train:
+  parent_config: few_shot_sampling
+  num_examples_per_label: 8
+  also_sample_dev: True
+  num_examples_per_label_dev: 8
+  seed: 
+    - 244
+    - 178
+    
+logging:
+  path: logs/mnli_roberta-large_soft_manual_template_manual_verbalizer_211109180842
+
+record:
+  comet: True
+  debug : True
+  creator: yzx
+  tags: ['roberta-large', 'tune_model', 'default-setting', 'few-shot-32-train', 'few-shot-32-dev','agnews']
+  text: "使用新版的代码跑manual prompt，这是第四个prompt"
+
+reproduce:  # seed for reproduction 
+  cuda_seed: 214 # seed for cuda
+
+classification:
+  metric:  # the first one will be the main  to determine checkpoint.
+    - micro-f1  # whether the higher metric value is better. 
+    - accuracy
+  loss_function: cross_entropy ## the loss function for classification

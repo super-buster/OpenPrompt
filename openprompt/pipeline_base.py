@@ -109,7 +109,13 @@ class PromptDataLoader(object):
             # for idx, example in tqdm(enumerate(self.raw_dataset),desc='Wrapping'):
             for idx, example in enumerate(self.raw_dataset):
                 wrapped_example = self.template.wrap_one_example(example)
-                self.wrapped_dataset.append(wrapped_example)
+                begin=0
+                for end,example in enumerate(wrapped_example[0]):
+                    if end == len(wrapped_example[0])-1:
+                        self.wrapped_dataset.append([wrapped_example[0][begin:],wrapped_example[1]])
+                    if example.get('text') == ' ---':
+                        self.wrapped_dataset.append([wrapped_example[0][begin:end],wrapped_example[1]])
+                        begin = end+1
         else:
             raise NotImplementedError
     
@@ -255,7 +261,7 @@ class PromptForClassification(nn.Module):
         outputs = outputs.view(batch['loss_ids'].shape[0], -1, outputs.shape[1])
         if outputs.shape[1] == 1:
             outputs = outputs.view(outputs.shape[0], outputs.shape[2])
-        return outputs
+        return outputs  
         
     def forward(self, batch: Union[Dict, InputFeatures]) -> torch.Tensor:
         r""" TODO
