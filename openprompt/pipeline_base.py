@@ -45,6 +45,7 @@ class PromptDataLoader(object):
                  template: Template,
                  tokenizer: PreTrainedTokenizer,
                  tokenizer_wrapper_class: TokenizerWrapper,
+                 split: str,
                  max_seq_length: Optional[str] = 512,
                  batch_size: Optional[int] = 1,
                  shuffle: Optional[bool] = False,
@@ -65,7 +66,7 @@ class PromptDataLoader(object):
         self.batch_size = batch_size
         self.shuffle = shuffle
         self.teacher_forcing = teacher_forcing
-
+        self.split=split
         tokenizer_wrapper_init_keys = signature(tokenizer_wrapper_class.__init__).args
         prepare_kwargs = {
             "max_seq_length" : max_seq_length,
@@ -85,7 +86,10 @@ class PromptDataLoader(object):
                                                          named wrap_one_example"
         
         # processs
-        self.wrap()
+        if self.split == 'train':
+            self.wrap_train()
+        else:
+            self.wrap()
         self.tokenize()
 
         if self.shuffle:
@@ -100,8 +104,19 @@ class PromptDataLoader(object):
             collate_fn = InputFeatures.collate_fct
         )
     
-    
     def wrap(self):
+        r"""A simple interface to pass the examples to prompt, and wrap the text with template.
+        """
+        if isinstance(self.raw_dataset, Dataset) or isinstance(self.raw_dataset, List): # TODO change to iterable 
+            assert len(self.raw_dataset) > 0, 'The dataset to be wrapped is empty.'
+            # for idx, example in tqdm(enumerate(self.raw_dataset),desc='Wrapping'):
+            for idx, example in enumerate(self.raw_dataset):
+                wrapped_example = self.template.wrap_one_example(example)
+                self.wrapped_dataset.append(wrapped_example)
+        else:
+            raise NotImplementedError
+
+    def wrap_train(self):
         r"""A simple interface to pass the examples to prompt, and wrap the text with template.
         """
         if isinstance(self.raw_dataset, Dataset) or isinstance(self.raw_dataset, List): # TODO change to iterable 

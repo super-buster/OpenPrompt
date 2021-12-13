@@ -32,6 +32,7 @@ def build_dataloader(dataset, template, tokenizer,tokenizer_wrapper_class, confi
         shuffle = config[split].shuffle_data,
         teacher_forcing = config[split].teacher_forcing if hasattr(config[split],'teacher_forcing') else None,
         predict_eos_token = True if config.task == "generation" else False,
+        split = split,
         **config.dataloader
     )
     return dataloader

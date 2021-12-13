@@ -40,6 +40,7 @@ def build_dataloader(dataset, template, tokenizer,tokenizer_wrapper_class, confi
         template = template, 
         tokenizer = tokenizer, 
         tokenizer_wrapper_class=tokenizer_wrapper_class, 
+        split=split,
         batch_size = config[split].batch_size,
         shuffle = config[split].shuffle_data,
         teacher_forcing = config[split].teacher_forcing if hasattr(config[split],'teacher_forcing') else None,

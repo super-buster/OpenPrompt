@@ -74,8 +74,8 @@ record:
   comet: True
   debug : True
   creator: yzx
-  tags: ['roberta-large', 'tune_model', 'default-setting', 'few-shot-32-train', 'few-shot-32-dev','agnews']
-  text: "使用新版的代码跑manual prompt，这是第四个prompt"
+  tags: ['roberta-large', 'tune_model', 'default-setting', 'few-shot-32-train', 'few-shot-32-dev','agnews','contrastive-learning']
+  text: "introduce contrastive learning. '\n' try few-shot manual prompt first"
 
 reproduce:  # seed for reproduction 
   cuda_seed: 214 # seed for cuda
