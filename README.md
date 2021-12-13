@@ -18,13 +18,17 @@
 
 </div>
 
-![version](https://img.shields.io/badge/version-v0.0.1--beta-blue)
+![version](https://img.shields.io/badge/version-v0.1.2-blue)
+
+
+
 
 ## What's New?
 
-
+- Dec 2021: `pip install openprompt`
+- Dec 2021: [SuperGLUE performance](https://github.com/thunlp/OpenPrompt/tree/main/results) are added 
+- Dec 2021: We support **generation paradigm for all tasks** by adding a new verbalizer:[GenerationVerbalizer](https://github.com/thunlp/OpenPrompt/blob/main/openprompt/prompts/generation_verbalizer.py) and a [tutorial: 4.1_all_tasks_are_generation.py](https://github.com/thunlp/OpenPrompt/blob/main/tutorial/4.1_all_tasks_are_generation.py)
 - Nov 2021: Now we have released a paper [OpenPrompt: An Open-source Framework for Prompt-learning](https://arxiv.org/abs/2111.01998).
-
 - Nov 2021 PrefixTuning supports t5 now.
 - Nov 2021: We made some major changes from the last version, where a flexible template language is newly introduced! Part of the docs is outdated and we will fix it soon. 
 
@@ -57,6 +61,17 @@
 
 ## Installation
 
+### Using Pip
+
+Our repo is tested on Python 3.6+ and PyTorch 1.8.1+, install OpenPrompt using pip as follows:
+
+
+```shell
+pip install openprompt
+```
+
+To play with the latest features, you can also install OpenPrompt from the source.
+
 ### Using Git  
 
 Clone the repository from github: 
@@ -88,7 +103,7 @@ With the modularity and flexibility of OpenPrompt, you can easily develop a prom
 
 #### Step 1: Define a task
 
-The first step is to determine the current NLP task, think about what’s your data looks like and what do you want from the data! That is, the essence of this step is to determine the `classses` and the `InputExample` of the task. For simplicity, we use Sentiment Analysis as an example. tutorial_task.
+The first step is to determine the current NLP task, think about what’s your data looks like and what do you want from the data! That is, the essence of this step is to determine the `classses` and the `InputExample` of the task. For simplicity, we use Sentiment Analysis as an example. tutorial_task.
 
 ```python
 from openprompt.data_utils import InputExample
@@ -113,7 +128,7 @@ dataset = [ # For simplicity, there's only two examples
 
 #### Step 2: Define a Pre-trained Language Models (PLMs) as backbone.
 
-Choose a PLM to support your task. Different models have different attributes, we encourge you to use OpenPrompt to explore the potential of various PLMs. OpenPrompt is compatible with models on [huggingface](https://huggingface.co/transformers/).
+Choose a PLM to support your task. Different models have different attributes, we encourge you to use OpenPrompt to explore the potential of various PLMs. OpenPrompt is compatible with models on [huggingface](https://huggingface.co/transformers/).
 
 ```python
 from openprompt.plms import load_plm
@@ -124,7 +139,7 @@ plm, tokenizer, model_config, WrapperClass = load_plm("bert", "bert-base-cased")
 
 #### Step 3: Define a Template.
 
-A `Template` is a modifier of the original input text, which is also one of the most important modules in prompt-learning. 
+A `Template` is a modifier of the original input text, which is also one of the most important modules in prompt-learning. 
 We have defined `text_a` in Step 1.
 
 ```python
@@ -139,7 +154,7 @@ promptTemplate = ManualTemplate(
 
 #### Step 4: Define a Verbalizer
 
-A `Verbalizer` is another important (but not neccessary) in prompt-learning,which projects the original labels (we have defined them as `classes`, remember?) to a set of label words. Here is an example that we project the `negative` class to the word bad, and project the `positive` class to the words good, wonderful, great.
+A `Verbalizer` is another important (but not neccessary) in prompt-learning,which projects the original labels (we have defined them as `classes`, remember?) to a set of label words. Here is an example that we project the `negative` class to the word bad, and project the `positive` class to the words good, wonderful, great.
 
 ```python
 from openprompt.prompts import ManualVerbalizer
@@ -157,7 +172,7 @@ promptVerbalizer = ManualVerbalizer(
 
 #### Step 5: Combine them into a PromptModel
 
-Given the task, now we have a `PLM`, a `Template` and a `Verbalizer`, we combine them into a `PromptModel`. Note that although the example naively combine the three modules, you can actually define some complicated interactions among them.
+Given the task, now we have a `PLM`, a `Template` and a `Verbalizer`, we combine them into a `PromptModel`. Note that although the example naively combine the three modules, you can actually define some complicated interactions among them.
 
 ```python
 from openprompt import PromptForClassification
@@ -226,10 +241,12 @@ Please cite our paper if you use OpenPrompt in your work
   year={2021}
 }
 ```
-
- 
-
 ## Contributors
 
-We thank all the  contributors to this project, more contributors are welcome!
+<!-- Copy-paste in your Readme.md file -->
 
+<a href="https://github.com/thunlp/OpenPrompt/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=thunlp/OpenPrompt" />
+</a>
+
+We thank all the  contributors to this project, more contributors are welcome!
