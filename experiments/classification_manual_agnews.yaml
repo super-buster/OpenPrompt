@@ -72,10 +72,10 @@ logging:
 
 record:
   comet: True
-  debug : True
+  debug : False
   creator: yzx
-  tags: ['roberta-large', 'tune_model', 'default-setting', 'few-shot-32-train', 'few-shot-32-dev','agnews','contrastive-learning']
-  text: "introduce contrastive learning. '\n' try few-shot manual prompt first"
+  tags: ['roberta-large', 'tune_model', 'default-setting', 'few-shot-32-train', 'few-shot-32-dev','agnews','multi_prompt_learning']
+  text: "introduce two templates in traning processs but do not do any loss between them. \n for comparing with contrastive learning."
 
 reproduce:  # seed for reproduction 
   cuda_seed: 214 # seed for cuda

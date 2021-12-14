@@ -86,10 +86,8 @@ class PromptDataLoader(object):
                                                          named wrap_one_example"
         
         # processs
-        if self.split == 'train':
-            self.wrap_train()
-        else:
-            self.wrap()
+        #self.wrap()
+        self.multi_warp()
         self.tokenize()
 
         if self.shuffle:
@@ -116,7 +114,7 @@ class PromptDataLoader(object):
         else:
             raise NotImplementedError
 
-    def wrap_train(self):
+    def multi_warp(self):
         r"""A simple interface to pass the examples to prompt, and wrap the text with template.
         """
         if isinstance(self.raw_dataset, Dataset) or isinstance(self.raw_dataset, List): # TODO change to iterable 
@@ -131,6 +129,8 @@ class PromptDataLoader(object):
                     if example.get('text') == ' ---':
                         self.wrapped_dataset.append([wrapped_example[0][begin:end],wrapped_example[1]])
                         begin = end+1
+                        if self.split!='train': # only use first prompt to do eval
+                            break
         else:
             raise NotImplementedError
     

@@ -496,6 +496,7 @@ class ClassificationRunner(BaseRunner):
             logits_mean=(logits_p+logits_q)/2
             loss_js=(F.kl_div(logits_p.log(),logits_mean,reduction='sum')+F.kl_div(logits_q.log(),logits_mean,reduction='sum'))/2
         alpha=0.85
+        loss=loss_ce
         loss=loss_ce+alpha*loss_js
         return loss
 
